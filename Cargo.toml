@@ -1,0 +1,15 @@
+[package]
+name = "fast-set"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+fxhash = "0.2"
+nohash = "0.2"
+roaring = "0.11"
+static_init = "1"
+
+[dev-dependencies]
+dhat = "0.3"
+rand = "0.9"
