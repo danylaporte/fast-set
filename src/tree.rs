@@ -12,6 +12,15 @@ impl<K> Tree<K> {
     pub fn new() -> Self {
         Default::default()
     }
+
+    #[inline]
+    pub fn all_nodes(&self) -> IntSet<K>
+    where
+        K: Into<u32>,
+    {
+        unsafe { IntSet::from_bitmap(self.erased.all_nodes()) }
+    }
+
     #[inline]
     pub fn apply(&mut self, log: TreeIndexLog<K>) -> bool {
         self.erased.apply(log.erased)

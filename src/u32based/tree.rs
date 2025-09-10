@@ -100,6 +100,22 @@ impl Tree {
         changed
     }
 
+    pub fn all_nodes(&self) -> RoaringBitmap {
+        let mut b = RoaringBitmap::new();
+
+        for (&c, set) in &self.children {
+            b.insert(c);
+            b |= &**set;
+        }
+
+        for (&p, &n) in &self.parents {
+            b.insert(p);
+            b.insert(n);
+        }
+
+        b
+    }
+
     pub fn children(&self, node: u32) -> &RoaringBitmap {
         self.children
             .get(&node)
