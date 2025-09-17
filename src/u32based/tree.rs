@@ -536,6 +536,7 @@ struct RemoveItem {
     parent: Option<u32>,
 }
 
+#[derive(Clone)]
 pub struct TreeAncestorIter<'a> {
     child: Option<u32>,
     cycles: &'a Set,
@@ -557,6 +558,7 @@ impl Iterator for TreeAncestorIter<'_> {
     }
 }
 
+#[derive(Clone)]
 pub struct TreeLogAncestorIter<'a> {
     child: Option<u32>,
     cycles: &'a Set,

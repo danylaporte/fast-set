@@ -107,7 +107,7 @@ impl<K> Tree<K> {
     }
 
     #[inline]
-    pub fn ancestors(&self, child: K) -> impl Iterator<Item = K> + '_
+    pub fn ancestors(&self, child: K) -> impl Iterator<Item = K> + Clone + '_
     where
         K: From<u32> + Into<u32>,
     {
@@ -115,7 +115,7 @@ impl<K> Tree<K> {
     }
 
     #[inline]
-    pub fn ancestors_with_self(&self, child: K) -> impl Iterator<Item = K> + '_
+    pub fn ancestors_with_self(&self, child: K) -> impl Iterator<Item = K> + Clone + '_
     where
         K: From<u32> + Into<u32>,
     {
@@ -282,7 +282,7 @@ impl<K> TreeIndexLog<K> {
     }
 
     #[inline]
-    pub fn ancestors<'a>(&'a self, base: &'a Tree<K>, child: K) -> impl Iterator<Item = K> + 'a
+    pub fn ancestors<'a>(&'a self, base: &'a Tree<K>, child: K) -> impl Iterator<Item = K> + Clone + 'a
     where
         K: From<u32> + Into<u32>,
     {
@@ -296,7 +296,7 @@ impl<K> TreeIndexLog<K> {
         &'a self,
         base: &'a Tree<K>,
         child: K,
-    ) -> impl Iterator<Item = K> + 'a
+    ) -> impl Iterator<Item = K> + Clone + 'a
     where
         K: From<u32> + Into<u32>,
     {
