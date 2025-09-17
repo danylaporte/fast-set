@@ -6,9 +6,9 @@ publish = false
 
 [dependencies]
 fxhash = "0.2"
+intern = { git = "https://github.com/danylaporte/intern.git", features = ["roaring"] }
 nohash = "0.2"
 roaring = "0.11"
-static_init = "1"
 
 [dev-dependencies]
 dhat = "0.3"

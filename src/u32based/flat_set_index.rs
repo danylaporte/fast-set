@@ -1,4 +1,4 @@
-use crate::interner::{IRoaringBitmap, default_i_roaring_bitmap};
+use crate::{IRoaringBitmap, default_i_roaring_bitmap};
 use roaring::RoaringBitmap;
 use std::{
     borrow::Borrow,
@@ -32,7 +32,7 @@ impl<K, S> FlatSetIndex<K, S> {
     pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
         Self {
             map: HashMap::with_capacity_and_hasher(capacity, hasher),
-            none: IRoaringBitmap::default(),
+            none: Default::default(),
         }
     }
 
@@ -88,12 +88,12 @@ impl<K, S> FlatSetIndex<K, S> {
         Q: ?Sized + Eq + Hash,
         S: BuildHasher,
     {
-        self.map.get(k).is_some_and(|b| b.contains(val))
+        self.map.get(k).is_some_and(|b| b.as_bitmap().contains(val))
     }
 
     #[inline]
     pub fn contains_none(&self, val: u32) -> bool {
-        self.none.contains(val)
+        self.none.as_bitmap().contains(val)
     }
 
     #[inline]
@@ -127,10 +127,10 @@ impl<K, S> FlatSetIndex<K, S> {
         let mut b = RoaringBitmap::new();
 
         for bm in self.map.values() {
-            b |= &**bm;
+            b |= bm.as_bitmap();
         }
 
-        b |= &*self.none;
+        b |= self.none.as_bitmap();
 
         b
     }
@@ -273,6 +273,15 @@ impl<K, S> FlatSetIndexBuilder<K, S> {
     }
 }
 
+impl<K, S: Default> Default for FlatSetIndexBuilder<K, S> {
+    fn default() -> Self {
+        Self {
+            base: Default::default(),
+            log: Default::default(),
+        }
+    }
+}
+
 pub struct FlatSetIndexLog<K, S> {
     map: HashMap<K, RoaringBitmap, S>,
     none: Option<RoaringBitmap>,
@@ -347,9 +356,9 @@ impl<K, S> FlatSetIndexLog<K, S> {
         Q: ?Sized + Eq + Hash,
         S: BuildHasher,
     {
-        match self.map.get(&k) {
+        match self.map.get(k) {
             Some(log) => log,
-            None => base.get(k),
+            None => base.get(k).as_bitmap(),
         }
     }
 
@@ -361,7 +370,7 @@ impl<K, S> FlatSetIndexLog<K, S> {
         match self.map.entry(key) {
             Entry::Occupied(o) => o.into_mut(),
             Entry::Vacant(v) => {
-                let b = base.get(v.key()).into();
+                let b = base.get(v.key()).as_bitmap().clone();
                 v.insert(b)
             }
         }
@@ -397,12 +406,13 @@ impl<K, S> FlatSetIndexLog<K, S> {
     pub fn none<'a>(&'a self, base: &'a FlatSetIndex<K, S>) -> &'a RoaringBitmap {
         match &self.none {
             Some(log) => log,
-            None => base.none(),
+            None => base.none().as_bitmap(),
         }
     }
 
     fn none_mut(&mut self, base: &FlatSetIndex<K, S>) -> &mut RoaringBitmap {
-        self.none.get_or_insert_with(|| base.none.to_bitmap())
+        self.none
+            .get_or_insert_with(|| base.none.as_bitmap().clone())
     }
 
     #[inline]
@@ -455,7 +465,7 @@ mod tests {
     #[test]
     fn empty_index_is_consistent() {
         let idx = FlatSetIndex::<u32, _>::new();
-        assert!(idx.none().is_empty());
+        assert!(idx.none().as_bitmap().is_empty());
         assert!(idx.map.is_empty());
     }
 
@@ -510,7 +520,7 @@ mod tests {
         assert!(idx.contains(&1, 1));
         assert!(!idx.contains(&1, 2));
         assert!(idx.contains(&1, 3));
-        assert_eq!(idx.get(&1).len(), 2);
+        assert_eq!(idx.get(&1).as_bitmap().len(), 2);
     }
 
     #[test]
@@ -544,7 +554,7 @@ mod tests {
         // ensure the log applies cleanly
         let idx = builder.build();
         for k in 0..50 {
-            let rb: RoaringBitmap = idx.get(&k).into();
+            let rb: RoaringBitmap = idx.get(&k).inner().clone();
             for v in rb.iter() {
                 assert!(idx.contains(&k, v));
             }
@@ -588,7 +598,7 @@ mod tests {
 
         for h in handles {
             let idx = h.join().unwrap();
-            assert!(idx.get(&0).len() > 0);
+            assert!(idx.get(&0).as_bitmap().len() > 0);
         }
     }
 }

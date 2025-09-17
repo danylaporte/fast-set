@@ -1,4 +1,4 @@
-use crate::interner::{IRoaringBitmap, empty_roaring};
+use crate::{IRoaringBitmap, empty_roaring};
 use nohash::{IntMap, IntSet};
 use roaring::RoaringBitmap;
 use std::{
@@ -52,7 +52,7 @@ impl Tree {
                         o.remove();
                         changed = true;
                     }
-                    Entry::Occupied(mut o) if b != *o.get() => {
+                    Entry::Occupied(mut o) if b != *o.get().as_bitmap() => {
                         o.insert(b.into());
                         changed = true;
                     }
@@ -105,7 +105,7 @@ impl Tree {
 
         for (&c, set) in &self.children {
             b.insert(c);
-            b |= &**set;
+            b |= set.as_bitmap();
         }
 
         for (&p, &n) in &self.parents {

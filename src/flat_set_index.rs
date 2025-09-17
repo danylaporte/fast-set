@@ -55,7 +55,7 @@ impl<K, V> FlatSetIndex<K, V> {
     where
         K: Into<u32>,
     {
-        unsafe { IntSet::from_bitmap_ref(self.inner.get(&key.into())) }
+        unsafe { IntSet::from_bitmap_ref(self.inner.get(&key.into()).as_bitmap()) }
     }
 
     #[inline]
@@ -81,7 +81,7 @@ impl<K, V> FlatSetIndex<K, V> {
 
     #[inline]
     pub fn none(&self) -> &IntSet<V> {
-        unsafe { IntSet::from_bitmap_ref(self.inner.none()) }
+        unsafe { IntSet::from_bitmap_ref(self.inner.none().as_bitmap()) }
     }
 
     #[inline]

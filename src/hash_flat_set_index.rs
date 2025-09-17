@@ -55,7 +55,7 @@ impl<K, V> HashFlatSetIndex<K, V> {
         K: Borrow<Q> + Eq + Hash,
         Q: ?Sized + Eq + Hash,
     {
-        unsafe { IntSet::from_bitmap_ref(self.inner.get(k)) }
+        unsafe { IntSet::from_bitmap_ref(self.inner.get(k).as_bitmap()) }
     }
 
     #[inline]
@@ -75,7 +75,7 @@ impl<K, V> HashFlatSetIndex<K, V> {
 
     #[inline]
     pub fn none(&self) -> &IntSet<V> {
-        unsafe { IntSet::from_bitmap_ref(self.inner.none()) }
+        unsafe { IntSet::from_bitmap_ref(self.inner.none().as_bitmap()) }
     }
 
     #[inline]
@@ -276,7 +276,7 @@ impl<K, V> HashFlatSetIndexLog<K, V> {
         K: Eq + Hash,
         V: Into<u32>,
     {
-        self.inner.insert(&base.inner, key.into(), value.into())
+        self.inner.insert(&base.inner, key, value.into())
     }
 
     #[inline]
