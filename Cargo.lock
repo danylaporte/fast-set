@@ -51,12 +51,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
 
 [[package]]
-name = "bytemuck"
-version = "1.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3995eaeebcdf32f91f980d360f78732ddc061097ab4e39991ae7a6ace9194677"
-
-[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -99,7 +93,6 @@ dependencies = [
  "intern",
  "nohash",
  "rand",
- "roaring",
 ]
 
 [[package]]
@@ -149,11 +142,11 @@ dependencies = [
 [[package]]
 name = "intern"
 version = "0.1.0"
-source = "git+https://github.com/danylaporte/intern.git#56529b44b1a3958d1f9ba05490e5b187dcf1db92"
+source = "git+https://github.com/danylaporte/intern.git#66b4c4fd28158aae92691463590901c0dc42e4d6"
 dependencies = [
  "hashbrown",
+ "nohash",
  "parking_lot",
- "roaring",
  "rustc-hash 2.1.1",
 ]
 
@@ -313,16 +306,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5407465600fb0548f1442edf71dd20683c6ed326200ace4b1ef0763521bb3b77"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "roaring"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f08d6a905edb32d74a5d5737a0c9d7e950c312f3c46cb0ca0a2ca09ea11878a0"
-dependencies = [
- "bytemuck",
- "byteorder",
 ]
 
 [[package]]

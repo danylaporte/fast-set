@@ -10,18 +10,20 @@ pub use hash_flat_set_index::{
     HashFlatSetIndex, HashFlatSetIndexBuilder, HashFlatSetIndexLog, HashFlatSetIndexTrx,
 };
 pub use int_set::IntSet;
-use roaring::RoaringBitmap;
+use intern::U32HashSet;
 pub use tree::{Tree, TreeIndexLog};
 
-#[doc(hidden)]
-pub use intern::IRoaringBitmap;
+pub type U32Set = nohash::IntSet<u32>;
 
-fn empty_roaring() -> &'static RoaringBitmap {
-    static B: std::sync::OnceLock<RoaringBitmap> = std::sync::OnceLock::new();
-    B.get_or_init(RoaringBitmap::new)
+#[doc(hidden)]
+pub use intern::IU32HashSet;
+
+fn empty_roaring() -> &'static U32HashSet {
+    static B: std::sync::OnceLock<U32HashSet> = std::sync::OnceLock::new();
+    B.get_or_init(U32HashSet::default)
 }
 
-fn default_i_roaring_bitmap() -> &'static IRoaringBitmap {
-    static B: std::sync::OnceLock<IRoaringBitmap> = std::sync::OnceLock::new();
-    B.get_or_init(|| RoaringBitmap::new().into())
+fn default_iu32_hashset() -> &'static IU32HashSet {
+    static B: std::sync::OnceLock<IU32HashSet> = std::sync::OnceLock::new();
+    B.get_or_init(|| U32HashSet::default().into())
 }

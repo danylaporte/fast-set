@@ -1,5 +1,5 @@
-use crate::{IRoaringBitmap, default_i_roaring_bitmap};
-use roaring::RoaringBitmap;
+use crate::{U32Set, default_iu32_hashset};
+use intern::IU32HashSet;
 use std::{
     borrow::Borrow,
     collections::hash_map::{self, Entry, HashMap, Keys},
@@ -11,8 +11,8 @@ pub type U32FlatSetIndexBuilder = FlatSetIndexBuilder<u32, nohash::BuildNoHashHa
 pub type U32FlatSetIndexLog = FlatSetIndexLog<u32, nohash::BuildNoHashHasher<u32>>;
 
 pub struct FlatSetIndex<K, S = RandomState> {
-    map: HashMap<K, IRoaringBitmap, S>,
-    none: IRoaringBitmap,
+    map: HashMap<K, IU32HashSet, S>,
+    none: IU32HashSet,
 }
 
 impl<K> FlatSetIndex<K, RandomState> {
@@ -40,7 +40,7 @@ impl<K, S> FlatSetIndex<K, S> {
     pub fn with_hasher(hasher: S) -> Self {
         Self {
             map: HashMap::with_hasher(hasher),
-            none: IRoaringBitmap::default(),
+            none: IU32HashSet::default(),
         }
     }
 
@@ -88,49 +88,45 @@ impl<K, S> FlatSetIndex<K, S> {
         Q: ?Sized + Eq + Hash,
         S: BuildHasher,
     {
-        self.map.get(k).is_some_and(|b| b.as_bitmap().contains(val))
+        self.map.get(k).is_some_and(|b| b.as_set().contains(&val))
     }
 
     #[inline]
     pub fn contains_none(&self, val: u32) -> bool {
-        self.none.as_bitmap().contains(val)
+        self.none.as_set().contains(&val)
     }
 
     #[inline]
-    pub fn get<Q>(&self, k: &Q) -> &IRoaringBitmap
+    pub fn get<Q>(&self, k: &Q) -> &IU32HashSet
     where
         K: Borrow<Q> + Eq + Hash,
         Q: ?Sized + Eq + Hash,
         S: BuildHasher,
     {
-        self.map
-            .get(k)
-            .unwrap_or_else(|| default_i_roaring_bitmap())
+        self.map.get(k).unwrap_or_else(|| default_iu32_hashset())
     }
 
     #[inline]
-    pub fn iter(&self) -> hash_map::Iter<'_, K, IRoaringBitmap> {
+    pub fn iter(&self) -> hash_map::Iter<'_, K, IU32HashSet> {
         self.map.iter()
     }
 
     #[inline]
-    pub fn keys(&self) -> Keys<'_, K, IRoaringBitmap> {
+    pub fn keys(&self) -> Keys<'_, K, IU32HashSet> {
         self.map.keys()
     }
 
     #[inline]
-    pub fn none(&self) -> &IRoaringBitmap {
+    pub fn none(&self) -> &IU32HashSet {
         &self.none
     }
 
-    pub fn values(&self) -> RoaringBitmap {
-        let mut b = RoaringBitmap::new();
+    pub fn values(&self) -> U32Set {
+        let mut b = self.none.as_set().clone();
 
-        for bm in self.map.values() {
-            b |= bm.as_bitmap();
+        for item in self.map.values() {
+            b.extend(item.as_set());
         }
-
-        b |= self.none.as_bitmap();
 
         b
     }
@@ -203,7 +199,7 @@ impl<K, S> FlatSetIndexBuilder<K, S> {
     }
 
     #[inline]
-    pub fn difference(&mut self, key: K, rhs: &RoaringBitmap)
+    pub fn difference(&mut self, key: K, rhs: &U32Set)
     where
         K: Eq + Hash,
         S: BuildHasher,
@@ -212,7 +208,7 @@ impl<K, S> FlatSetIndexBuilder<K, S> {
     }
 
     #[inline]
-    pub fn difference_none(&mut self, rhs: &RoaringBitmap) {
+    pub fn difference_none(&mut self, rhs: &U32Set) {
         self.log.difference_none(&self.base, rhs);
     }
 
@@ -231,7 +227,7 @@ impl<K, S> FlatSetIndexBuilder<K, S> {
     }
 
     #[inline]
-    pub fn intersection(&mut self, key: K, rhs: &RoaringBitmap)
+    pub fn intersection(&mut self, key: K, rhs: &U32Set)
     where
         K: Eq + Hash,
         S: BuildHasher,
@@ -240,7 +236,7 @@ impl<K, S> FlatSetIndexBuilder<K, S> {
     }
 
     #[inline]
-    pub fn intersection_none(&mut self, rhs: &RoaringBitmap) {
+    pub fn intersection_none(&mut self, rhs: &U32Set) {
         self.log.intersection_none(&self.base, rhs);
     }
 
@@ -259,7 +255,7 @@ impl<K, S> FlatSetIndexBuilder<K, S> {
     }
 
     #[inline]
-    pub fn union(&mut self, key: K, rhs: &RoaringBitmap)
+    pub fn union(&mut self, key: K, rhs: &U32Set)
     where
         K: Eq + Hash,
         S: BuildHasher,
@@ -268,7 +264,7 @@ impl<K, S> FlatSetIndexBuilder<K, S> {
     }
 
     #[inline]
-    pub fn union_none(&mut self, rhs: &RoaringBitmap) {
+    pub fn union_none(&mut self, rhs: &U32Set) {
         self.log.union_none(&self.base, rhs);
     }
 }
@@ -283,8 +279,8 @@ impl<K, S: Default> Default for FlatSetIndexBuilder<K, S> {
 }
 
 pub struct FlatSetIndexLog<K, S> {
-    map: HashMap<K, RoaringBitmap, S>,
-    none: Option<RoaringBitmap>,
+    map: HashMap<K, U32Set, S>,
+    none: Option<U32Set>,
 }
 
 impl<K> FlatSetIndexLog<K, RandomState> {
@@ -324,7 +320,7 @@ impl<K, S> FlatSetIndexLog<K, S> {
         S: BuildHasher,
     {
         match self.map.get(k) {
-            Some(log) => log.contains(val),
+            Some(log) => log.contains(&val),
             None => base.contains(k, val),
         }
     }
@@ -332,25 +328,27 @@ impl<K, S> FlatSetIndexLog<K, S> {
     #[inline]
     pub fn contains_none(&self, base: &FlatSetIndex<K, S>, val: u32) -> bool {
         match &self.none {
-            Some(log) => log.contains(val),
+            Some(log) => log.contains(&val),
             None => base.contains_none(val),
         }
     }
 
-    pub fn difference(&mut self, base: &FlatSetIndex<K, S>, key: K, rhs: &RoaringBitmap)
+    pub fn difference(&mut self, base: &FlatSetIndex<K, S>, key: K, rhs: &U32Set)
     where
         K: Eq + Hash,
         S: BuildHasher,
     {
-        *self.get_mut(base, key) -= rhs;
+        let v = self.get_mut(base, key);
+        *v = v.difference(rhs).copied().collect();
     }
 
-    pub fn difference_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &RoaringBitmap) {
-        *self.none_mut(base) -= rhs;
+    pub fn difference_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &U32Set) {
+        let v = self.none_mut(base);
+        *v = v.difference(rhs).copied().collect();
     }
 
     #[inline]
-    pub fn get<'a, Q>(&'a self, base: &'a FlatSetIndex<K, S>, k: &Q) -> &'a RoaringBitmap
+    pub fn get<'a, Q>(&'a self, base: &'a FlatSetIndex<K, S>, k: &Q) -> &'a U32Set
     where
         K: Borrow<Q> + Eq + Hash,
         Q: ?Sized + Eq + Hash,
@@ -358,11 +356,11 @@ impl<K, S> FlatSetIndexLog<K, S> {
     {
         match self.map.get(k) {
             Some(log) => log,
-            None => base.get(k).as_bitmap(),
+            None => base.get(k).as_set(),
         }
     }
 
-    fn get_mut(&mut self, base: &FlatSetIndex<K, S>, key: K) -> &mut RoaringBitmap
+    fn get_mut(&mut self, base: &FlatSetIndex<K, S>, key: K) -> &mut U32Set
     where
         K: Eq + Hash,
         S: BuildHasher,
@@ -370,7 +368,7 @@ impl<K, S> FlatSetIndexLog<K, S> {
         match self.map.entry(key) {
             Entry::Occupied(o) => o.into_mut(),
             Entry::Vacant(v) => {
-                let b = base.get(v.key()).as_bitmap().clone();
+                let b = base.get(v.key()).as_set().clone();
                 v.insert(b)
             }
         }
@@ -390,29 +388,30 @@ impl<K, S> FlatSetIndexLog<K, S> {
         self.none_mut(base).insert(val)
     }
 
-    pub fn intersection(&mut self, base: &FlatSetIndex<K, S>, key: K, rhs: &RoaringBitmap)
+    pub fn intersection(&mut self, base: &FlatSetIndex<K, S>, key: K, rhs: &U32Set)
     where
         K: Eq + Hash,
         S: BuildHasher,
     {
-        *self.get_mut(base, key) &= rhs;
+        let v = self.get_mut(base, key);
+        *v = v.intersection(rhs).copied().collect();
     }
 
-    pub fn intersection_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &RoaringBitmap) {
-        *self.none_mut(base) &= rhs;
+    pub fn intersection_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &U32Set) {
+        let v = self.none_mut(base);
+        *v = v.intersection(rhs).copied().collect();
     }
 
     #[inline]
-    pub fn none<'a>(&'a self, base: &'a FlatSetIndex<K, S>) -> &'a RoaringBitmap {
+    pub fn none<'a>(&'a self, base: &'a FlatSetIndex<K, S>) -> &'a U32Set {
         match &self.none {
             Some(log) => log,
-            None => base.none().as_bitmap(),
+            None => base.none().as_set(),
         }
     }
 
-    fn none_mut(&mut self, base: &FlatSetIndex<K, S>) -> &mut RoaringBitmap {
-        self.none
-            .get_or_insert_with(|| base.none.as_bitmap().clone())
+    fn none_mut(&mut self, base: &FlatSetIndex<K, S>) -> &mut U32Set {
+        self.none.get_or_insert_with(|| base.none.as_set().clone())
     }
 
     #[inline]
@@ -421,24 +420,24 @@ impl<K, S> FlatSetIndexLog<K, S> {
         K: Eq + Hash,
         S: BuildHasher,
     {
-        self.get_mut(base, key).remove(val)
+        self.get_mut(base, key).remove(&val)
     }
 
     #[inline]
     pub fn remove_none(&mut self, base: &FlatSetIndex<K, S>, val: u32) -> bool {
-        self.none_mut(base).remove(val)
+        self.none_mut(base).remove(&val)
     }
 
-    pub fn union(&mut self, base: &FlatSetIndex<K, S>, key: K, rhs: &RoaringBitmap)
+    pub fn union(&mut self, base: &FlatSetIndex<K, S>, key: K, rhs: &U32Set)
     where
         K: Eq + Hash,
         S: BuildHasher,
     {
-        *self.get_mut(base, key) |= rhs;
+        self.get_mut(base, key).extend(rhs.iter().copied());
     }
 
-    pub fn union_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &RoaringBitmap) {
-        *self.none_mut(base) |= rhs;
+    pub fn union_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &U32Set) {
+        self.none_mut(base).extend(rhs.iter().copied());
     }
 }
 
@@ -452,12 +451,11 @@ impl<K, S: Default> Default for FlatSetIndexLog<K, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roaring::RoaringBitmap;
 
     /* ---------- helpers ---------- */
 
-    fn bitmap(vals: &[u32]) -> RoaringBitmap {
-        RoaringBitmap::from_iter(vals.iter().copied())
+    fn bitmap(vals: &[u32]) -> U32Set {
+        U32Set::from_iter(vals.iter().copied())
     }
 
     /* ---------- basic consistency ---------- */
@@ -465,7 +463,7 @@ mod tests {
     #[test]
     fn empty_index_is_consistent() {
         let idx = FlatSetIndex::<u32, _>::new();
-        assert!(idx.none().as_bitmap().is_empty());
+        assert!(idx.none().as_set().is_empty());
         assert!(idx.map.is_empty());
     }
 
@@ -520,7 +518,7 @@ mod tests {
         assert!(idx.contains(&1, 1));
         assert!(!idx.contains(&1, 2));
         assert!(idx.contains(&1, 3));
-        assert_eq!(idx.get(&1).as_bitmap().len(), 2);
+        assert_eq!(idx.get(&1).as_set().len(), 2);
     }
 
     #[test]
@@ -554,9 +552,9 @@ mod tests {
         // ensure the log applies cleanly
         let idx = builder.build();
         for k in 0..50 {
-            let rb: RoaringBitmap = idx.get(&k).inner().clone();
+            let rb: U32Set = idx.get(&k).inner().clone();
             for v in rb.iter() {
-                assert!(idx.contains(&k, v));
+                assert!(idx.contains(&k, *v));
             }
         }
     }
@@ -598,7 +596,7 @@ mod tests {
 
         for h in handles {
             let idx = h.join().unwrap();
-            assert!(idx.get(&0).as_bitmap().len() > 0);
+            assert!(idx.get(&0).as_set().len() > 0);
         }
     }
 }

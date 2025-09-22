@@ -1,6 +1,5 @@
 use dhat::{Alloc, Profiler};
-use fast_set::IRoaringBitmap;
-use roaring::RoaringBitmap;
+use fast_set::{IU32HashSet, U32Set};
 
 #[global_allocator]
 static ALLOC: Alloc = Alloc;
@@ -9,8 +8,8 @@ static ALLOC: Alloc = Alloc;
 fn no_leak_on_intern() {
     let _profiler = Profiler::builder().testing().build();
 
-    let rb = RoaringBitmap::from_iter(0..1_000);
-    let ib = IRoaringBitmap::from(&rb);
+    let rb = U32Set::from_iter(0..1_000);
+    let ib = IU32HashSet::from(&rb);
     let _clone = ib.clone();
     // Everything dropped here → allocations should be zero at exit
 }

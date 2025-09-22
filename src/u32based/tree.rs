@@ -1,6 +1,6 @@
-use crate::{IRoaringBitmap, empty_roaring};
+use crate::{U32Set, empty_roaring};
+use intern::IU32HashSet;
 use nohash::{IntMap, IntSet};
-use roaring::RoaringBitmap;
 use std::{
     collections::{hash_map::Entry, hash_set},
     mem::replace,
@@ -11,9 +11,9 @@ type Set = IntSet<u32>;
 
 #[derive(Clone, Default)]
 pub struct Tree {
-    children: IntMap<u32, IRoaringBitmap>,
+    children: IntMap<u32, IU32HashSet>,
     cycles: Set,
-    descendants: IntMap<u32, IRoaringBitmap>,
+    descendants: IntMap<u32, IU32HashSet>,
     parents: IntMap<u32, u32>,
 }
 
@@ -41,8 +41,8 @@ impl Tree {
     /// Returns `true` if anything changed.
     pub fn apply(&mut self, log: TreeLog) -> bool {
         fn apply_bitmap(
-            target: &mut IntMap<u32, IRoaringBitmap>,
-            source: IntMap<u32, RoaringBitmap>,
+            target: &mut IntMap<u32, IU32HashSet>,
+            source: IntMap<u32, U32Set>,
         ) -> bool {
             let mut changed = false;
 
@@ -52,7 +52,7 @@ impl Tree {
                         o.remove();
                         changed = true;
                     }
-                    Entry::Occupied(mut o) if b != *o.get().as_bitmap() => {
+                    Entry::Occupied(mut o) if b != *o.get().as_set() => {
                         o.insert(b.into());
                         changed = true;
                     }
@@ -100,12 +100,12 @@ impl Tree {
         changed
     }
 
-    pub fn all_nodes(&self) -> RoaringBitmap {
-        let mut b = RoaringBitmap::new();
+    pub fn all_nodes(&self) -> U32Set {
+        let mut b = U32Set::default();
 
         for (&c, set) in &self.children {
             b.insert(c);
-            b |= set.as_bitmap();
+            b.extend(set.as_set().iter().copied());
         }
 
         for (&p, &n) in &self.parents {
@@ -116,10 +116,10 @@ impl Tree {
         b
     }
 
-    pub fn children(&self, node: u32) -> &RoaringBitmap {
+    pub fn children(&self, node: u32) -> &U32Set {
         self.children
             .get(&node)
-            .map_or_else(|| empty_roaring(), IRoaringBitmap::as_bitmap)
+            .map_or_else(|| empty_roaring(), IU32HashSet::as_set)
     }
 
     #[inline]
@@ -148,10 +148,10 @@ impl Tree {
         Ok(d)
     }
 
-    pub fn descendants(&self, node: u32) -> &RoaringBitmap {
+    pub fn descendants(&self, node: u32) -> &U32Set {
         self.descendants
             .get(&node)
-            .map_or_else(|| empty_roaring(), IRoaringBitmap::as_bitmap)
+            .map_or_else(|| empty_roaring(), IU32HashSet::as_set)
     }
 
     #[inline]
@@ -169,7 +169,7 @@ impl Tree {
 
     #[inline]
     pub fn is_descendant_of(&self, child: u32, parent: u32) -> bool {
-        self.descendants(parent).contains(child)
+        self.descendants(parent).contains(&child)
     }
 
     #[inline]
@@ -194,13 +194,13 @@ impl FromIterator<(u32, Option<u32>)> for Tree {
 
 pub struct ItemsView<'a> {
     node: u32,
-    inner: &'a RoaringBitmap,
+    inner: &'a U32Set,
 }
 
 impl<'a> ItemsView<'a> {
     #[inline]
     pub fn contains(&self, value: u32) -> bool {
-        value == self.node || self.inner.contains(value)
+        value == self.node || self.inner.contains(&value)
     }
 
     #[inline]
@@ -209,24 +209,26 @@ impl<'a> ItemsView<'a> {
     }
 
     #[inline]
-    pub fn iter(&self) -> std::iter::Chain<std::iter::Once<u32>, roaring::bitmap::Iter<'a>> {
-        std::iter::once(self.node).chain(self.inner.iter())
+    pub fn iter(
+        &self,
+    ) -> std::iter::Chain<std::iter::Once<u32>, std::iter::Copied<hash_set::Iter<'a, u32>>> {
+        std::iter::once(self.node).chain(self.inner.iter().copied())
     }
 
     #[inline]
     pub fn len(&self) -> u64 {
-        1 + self.inner.len()
+        1 + self.inner.len() as u64
     }
 
     #[inline]
-    pub fn to_bitmap(&self) -> RoaringBitmap {
+    pub fn to_bitmap(&self) -> U32Set {
         let mut b = self.inner.clone();
         b.insert(self.node);
         b
     }
 }
 
-impl From<ItemsView<'_>> for RoaringBitmap {
+impl From<ItemsView<'_>> for U32Set {
     #[inline]
     fn from(value: ItemsView<'_>) -> Self {
         value.to_bitmap()
@@ -235,7 +237,8 @@ impl From<ItemsView<'_>> for RoaringBitmap {
 
 impl<'a> IntoIterator for ItemsView<'a> {
     type Item = u32;
-    type IntoIter = std::iter::Chain<std::iter::Once<u32>, roaring::bitmap::Iter<'a>>;
+    type IntoIter =
+        std::iter::Chain<std::iter::Once<u32>, std::iter::Copied<hash_set::Iter<'a, u32>>>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -245,7 +248,8 @@ impl<'a> IntoIterator for ItemsView<'a> {
 
 impl<'a> IntoIterator for &'a ItemsView<'a> {
     type Item = u32;
-    type IntoIter = std::iter::Chain<std::iter::Once<u32>, roaring::bitmap::Iter<'a>>;
+    type IntoIter =
+        std::iter::Chain<std::iter::Once<u32>, std::iter::Copied<hash_set::Iter<'a, u32>>>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -255,9 +259,9 @@ impl<'a> IntoIterator for &'a ItemsView<'a> {
 
 #[derive(Clone, Default)]
 pub struct TreeLog {
-    children: IntMap<u32, RoaringBitmap>,
+    children: IntMap<u32, U32Set>,
     cycles: Option<Set>,
-    descendants: IntMap<u32, RoaringBitmap>,
+    descendants: IntMap<u32, U32Set>,
     parents: IntMap<u32, Option<u32>>,
 }
 
@@ -282,13 +286,13 @@ impl TreeLog {
         }
     }
 
-    pub fn children<'a>(&'a self, base: &'a Tree, node: u32) -> &'a RoaringBitmap {
+    pub fn children<'a>(&'a self, base: &'a Tree, node: u32) -> &'a U32Set {
         self.children
             .get(&node)
             .unwrap_or_else(|| base.children(node))
     }
 
-    fn children_mut(&mut self, base: &Tree, node: u32) -> &mut RoaringBitmap {
+    fn children_mut(&mut self, base: &Tree, node: u32) -> &mut U32Set {
         self.children
             .entry(node)
             .or_insert_with(|| base.children(node).clone())
@@ -326,13 +330,13 @@ impl TreeLog {
         Ok(depth)
     }
 
-    pub fn descendants<'a>(&'a self, base: &'a Tree, node: u32) -> &'a RoaringBitmap {
+    pub fn descendants<'a>(&'a self, base: &'a Tree, node: u32) -> &'a U32Set {
         self.descendants
             .get(&node)
             .unwrap_or_else(|| base.descendants(node))
     }
 
-    fn descendants_mut(&mut self, base: &Tree, node: u32) -> &mut RoaringBitmap {
+    fn descendants_mut(&mut self, base: &Tree, node: u32) -> &mut U32Set {
         self.descendants
             .entry(node)
             .or_insert_with(|| base.descendants(node).clone())
@@ -387,7 +391,7 @@ impl TreeLog {
 
     #[inline]
     pub fn is_descendant_of(&self, base: &Tree, child: u32, parent: u32) -> bool {
-        self.descendants(base, parent).contains(child)
+        self.descendants(base, parent).contains(&child)
     }
 
     pub fn parent(&self, base: &Tree, child: u32) -> Option<u32> {
@@ -425,20 +429,20 @@ impl TreeLog {
         // ----------------------------------------------------------
         // 1.  Gather the full subtree (node + descendants)
         // ----------------------------------------------------------
-        let desc = replace(self.descendants_mut(base, node), RoaringBitmap::new());
-        let chil = replace(self.children_mut(base, node), RoaringBitmap::new());
+        let desc = replace(self.descendants_mut(base, node), U32Set::default());
+        let chil = replace(self.children_mut(base, node), U32Set::default());
 
         // ----------------------------------------------------------
         // 2.  Record state for every node in the subtree
         // ----------------------------------------------------------
         let mut removed = IntMap::default();
 
-        for id in desc.iter() {
+        for &id in desc.iter() {
             removed.insert(
                 id,
                 RemoveItem {
-                    children: replace(self.children_mut(base, id), RoaringBitmap::new()),
-                    descendants: replace(self.descendants_mut(base, id), RoaringBitmap::new()),
+                    children: replace(self.children_mut(base, id), U32Set::default()),
+                    descendants: replace(self.descendants_mut(base, id), U32Set::default()),
                     parent: self.parent_mut(base, id).take(),
                 },
             );
@@ -448,7 +452,7 @@ impl TreeLog {
         // 3.  Detach from former parent
         // ----------------------------------------------------------
         if let Some(p) = self.parent(base, node) {
-            self.children_mut(base, p).remove(node);
+            self.children_mut(base, p).remove(&node);
         }
 
         // ----------------------------------------------------------
@@ -460,10 +464,11 @@ impl TreeLog {
             if !visited.insert(p) {
                 break;
             }
+
             let d = self.descendants_mut(base, p);
 
-            *d -= &desc;
-            d.remove(node);
+            d.remove(&node);
+            d.retain(|k| !desc.contains(k));
 
             cur = self.parent(base, p);
         }
@@ -509,7 +514,7 @@ impl TreeLog {
             }
 
             let d = self.descendants_mut(base, p);
-            *d |= &item.descendants;
+            d.extend(item.descendants.iter().copied());
             d.insert(root);
 
             cur = self.parent(base, p);
@@ -531,8 +536,8 @@ pub struct CycleError(pub u32);
 
 #[derive(Clone, Default)]
 struct RemoveItem {
-    children: RoaringBitmap,
-    descendants: RoaringBitmap,
+    children: U32Set,
+    descendants: U32Set,
     parent: Option<u32>,
 }
 

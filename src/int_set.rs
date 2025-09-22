@@ -1,23 +1,25 @@
-use roaring::RoaringBitmap;
 use std::{
+    collections::hash_set,
     marker::PhantomData,
     ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Sub, SubAssign},
 };
 
+use crate::U32Set;
+
 #[repr(transparent)]
-pub struct IntSet<K>(RoaringBitmap, PhantomData<K>);
+pub struct IntSet<K>(U32Set, PhantomData<K>);
 
 impl<K> IntSet<K> {
     #[inline]
     pub fn new() -> Self {
-        Self(RoaringBitmap::new(), PhantomData)
+        Self(U32Set::default(), PhantomData)
     }
 
     /// # Safety
     /// The caller of the method must ensure that the generic parameter K
     /// correctly transpose to the bit representation.
     #[inline]
-    pub const unsafe fn from_bitmap(bitmap: RoaringBitmap) -> Self {
+    pub const unsafe fn from_set(bitmap: U32Set) -> Self {
         Self(bitmap, PhantomData)
     }
 
@@ -29,15 +31,15 @@ impl<K> IntSet<K> {
     /// are valid for `IntSet<K>` (they are, because `IntSet<K>` is
     /// `#[repr(transparent)]` over `AdaptiveBitmap`).
     #[inline]
-    pub unsafe fn from_bitmap_ref(bitmap: &RoaringBitmap) -> &IntSet<K> {
+    pub unsafe fn from_u32set_ref(bitmap: &U32Set) -> &IntSet<K> {
         // SAFETY: `IntSet<K>` is `#[repr(transparent)]` and its only
         // non-zero-sized field is the `AdaptiveBitmap`.  Therefore
         // `&AdaptiveBitmap` and `&IntSet<K>` have identical layout.
-        unsafe { &*(bitmap as *const RoaringBitmap as *const IntSet<K>) }
+        unsafe { &*(bitmap as *const U32Set as *const IntSet<K>) }
     }
 
     #[inline]
-    pub fn as_bitmap(&self) -> &RoaringBitmap {
+    pub fn as_set(&self) -> &U32Set {
         &self.0
     }
 
@@ -51,7 +53,7 @@ impl<K> IntSet<K> {
     where
         K: Into<u32>,
     {
-        self.0.contains(key.into())
+        self.0.contains(&key.into())
     }
 
     #[inline]
@@ -94,7 +96,7 @@ impl<K> IntSet<K> {
     where
         K: Into<u32>,
     {
-        self.0.remove(key.into())
+        self.0.remove(&key.into())
     }
 }
 
@@ -118,7 +120,7 @@ where
 {
     fn from_iter<I: IntoIterator<Item = K>>(iter: I) -> Self {
         IntSet(
-            RoaringBitmap::from_iter(iter.into_iter().map(Into::into)),
+            U32Set::from_iter(iter.into_iter().map(Into::into)),
             PhantomData,
         )
     }
@@ -157,7 +159,7 @@ impl<K> PartialEq for IntSet<K> {
     }
 }
 
-pub struct IntoIter<K>(roaring::bitmap::IntoIter, PhantomData<K>);
+pub struct IntoIter<K>(hash_set::IntoIter<u32>, PhantomData<K>);
 
 impl<K> Iterator for IntoIter<K>
 where
@@ -186,7 +188,7 @@ where
     }
 }
 
-pub struct Iter<'a, K>(roaring::bitmap::Iter<'a>, PhantomData<K>);
+pub struct Iter<'a, K>(hash_set::Iter<'a, u32>, PhantomData<K>);
 
 impl<K> Iterator for Iter<'_, K>
 where
@@ -196,7 +198,7 @@ where
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(K::from)
+        self.0.next().map(|v| K::from(*v))
     }
 
     #[inline]
@@ -215,6 +217,28 @@ where
     }
 }
 
+// 2. IntSet <op>= &IntSet
+impl<K> BitAndAssign<&IntSet<K>> for IntSet<K> {
+    #[inline]
+    fn bitand_assign(&mut self, rhs: &IntSet<K>) {
+        self.0.retain(|k| rhs.0.contains(k));
+    }
+}
+
+impl<K> BitOrAssign<&IntSet<K>> for IntSet<K> {
+    #[inline]
+    fn bitor_assign(&mut self, rhs: &IntSet<K>) {
+        self.0.extend(rhs.0.iter().copied());
+    }
+}
+
+impl<K> SubAssign<&IntSet<K>> for IntSet<K> {
+    #[inline]
+    fn sub_assign(&mut self, rhs: &IntSet<K>) {
+        self.0.retain(|k| !rhs.0.contains(k));
+    }
+}
+
 macro_rules! op {
     ($trait:ident, $method:ident, $trait_assign:ident, $method_assign:ident) => {
         // 1. &IntSet & &IntSet  -> IntSet
@@ -224,14 +248,6 @@ macro_rules! op {
             #[inline]
             fn $method(self, rhs: &IntSet<K>) -> IntSet<K> {
                 IntSet((&self.0).$method(&rhs.0), PhantomData)
-            }
-        }
-
-        // 2. IntSet <op>= &IntSet
-        impl<K> $trait_assign<&IntSet<K>> for IntSet<K> {
-            #[inline]
-            fn $method_assign(&mut self, rhs: &IntSet<K>) {
-                self.0.$method_assign(&rhs.0);
             }
         }
 

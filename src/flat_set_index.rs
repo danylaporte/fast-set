@@ -1,5 +1,4 @@
-use crate::{IntSet, u32based};
-use roaring::RoaringBitmap;
+use crate::{IntSet, U32Set, u32based};
 use std::{hash::Hash, marker::PhantomData};
 
 #[repr(transparent)]
@@ -55,7 +54,7 @@ impl<K, V> FlatSetIndex<K, V> {
     where
         K: Into<u32>,
     {
-        unsafe { IntSet::from_bitmap_ref(self.inner.get(&key.into()).as_bitmap()) }
+        unsafe { IntSet::from_u32set_ref(self.inner.get(&key.into()).as_set()) }
     }
 
     #[inline]
@@ -64,11 +63,9 @@ impl<K, V> FlatSetIndex<K, V> {
         K: From<u32>,
         V: Into<u32>,
     {
-        self.inner.iter().map(|(k, v)| {
-            (K::from(*k), unsafe {
-                IntSet::from_bitmap_ref(v.as_bitmap())
-            })
-        })
+        self.inner
+            .iter()
+            .map(|(k, v)| (K::from(*k), unsafe { IntSet::from_u32set_ref(v.as_set()) }))
     }
 
     #[inline]
@@ -81,12 +78,12 @@ impl<K, V> FlatSetIndex<K, V> {
 
     #[inline]
     pub fn none(&self) -> &IntSet<V> {
-        unsafe { IntSet::from_bitmap_ref(self.inner.none().as_bitmap()) }
+        unsafe { IntSet::from_u32set_ref(self.inner.none().as_set()) }
     }
 
     #[inline]
     pub fn values(&self) -> IntSet<V> {
-        unsafe { IntSet::from_bitmap(self.inner.values()) }
+        unsafe { IntSet::from_set(self.inner.values()) }
     }
 }
 
@@ -143,12 +140,12 @@ impl<K, V> FlatSetIndexBuilder<K, V> {
     where
         K: From<u32> + Into<u32>,
     {
-        self.log.difference(&self.base, key, rhs.as_bitmap());
+        self.log.difference(&self.base, key, rhs.as_set());
     }
 
     #[inline]
     pub fn difference_none(&mut self, rhs: &IntSet<V>) {
-        self.log.difference_none(&self.base, rhs.as_bitmap());
+        self.log.difference_none(&self.base, rhs.as_set());
     }
 
     #[inline]
@@ -173,12 +170,12 @@ impl<K, V> FlatSetIndexBuilder<K, V> {
     where
         K: From<u32> + Into<u32>,
     {
-        self.log.intersection(&self.base, key, rhs.as_bitmap());
+        self.log.intersection(&self.base, key, rhs.as_set());
     }
 
     #[inline]
     pub fn intersection_none(&mut self, rhs: &IntSet<V>) {
-        self.log.intersection_none(&self.base, rhs.as_bitmap());
+        self.log.intersection_none(&self.base, rhs.as_set());
     }
 
     #[inline]
@@ -203,12 +200,12 @@ impl<K, V> FlatSetIndexBuilder<K, V> {
     where
         K: From<u32> + Into<u32>,
     {
-        self.log.union(&self.base, key, rhs.as_bitmap());
+        self.log.union(&self.base, key, rhs.as_set());
     }
 
     #[inline]
     pub fn union_none(&mut self, rhs: &IntSet<V>) {
-        self.log.union_none(&self.base, rhs.as_bitmap());
+        self.log.union_none(&self.base, rhs.as_set());
     }
 }
 
@@ -267,12 +264,12 @@ impl<K, V> FlatSetIndexLog<K, V> {
     where
         K: Into<u32>,
     {
-        unsafe { IntSet::from_bitmap_ref(self.inner.get(&base.inner, &key.into())) }
+        unsafe { IntSet::from_u32set_ref(self.inner.get(&base.inner, &key.into())) }
     }
 
     #[inline]
     pub fn none<'a>(&'a self, base: &'a FlatSetIndex<K, V>) -> &'a IntSet<V> {
-        unsafe { IntSet::from_bitmap_ref(self.inner.none(&base.inner)) }
+        unsafe { IntSet::from_u32set_ref(self.inner.none(&base.inner)) }
     }
 
     #[inline]
@@ -312,7 +309,7 @@ impl<K, V> FlatSetIndexLog<K, V> {
     /* ---- bulk operations --------------------------------------------- */
 
     #[inline]
-    pub fn union(&mut self, base: &FlatSetIndex<K, V>, key: K, rhs: &RoaringBitmap)
+    pub fn union(&mut self, base: &FlatSetIndex<K, V>, key: K, rhs: &U32Set)
     where
         K: Into<u32>,
     {
@@ -320,12 +317,12 @@ impl<K, V> FlatSetIndexLog<K, V> {
     }
 
     #[inline]
-    pub fn union_none(&mut self, base: &FlatSetIndex<K, V>, rhs: &RoaringBitmap) {
+    pub fn union_none(&mut self, base: &FlatSetIndex<K, V>, rhs: &U32Set) {
         self.inner.union_none(&base.inner, rhs)
     }
 
     #[inline]
-    pub fn difference(&mut self, base: &FlatSetIndex<K, V>, key: K, rhs: &RoaringBitmap)
+    pub fn difference(&mut self, base: &FlatSetIndex<K, V>, key: K, rhs: &U32Set)
     where
         K: Into<u32>,
     {
@@ -333,12 +330,12 @@ impl<K, V> FlatSetIndexLog<K, V> {
     }
 
     #[inline]
-    pub fn difference_none(&mut self, base: &FlatSetIndex<K, V>, rhs: &RoaringBitmap) {
+    pub fn difference_none(&mut self, base: &FlatSetIndex<K, V>, rhs: &U32Set) {
         self.inner.difference_none(&base.inner, rhs)
     }
 
     #[inline]
-    pub fn intersection(&mut self, base: &FlatSetIndex<K, V>, key: K, rhs: &RoaringBitmap)
+    pub fn intersection(&mut self, base: &FlatSetIndex<K, V>, key: K, rhs: &U32Set)
     where
         K: Into<u32>,
     {
@@ -346,7 +343,7 @@ impl<K, V> FlatSetIndexLog<K, V> {
     }
 
     #[inline]
-    pub fn intersection_none(&mut self, base: &FlatSetIndex<K, V>, rhs: &RoaringBitmap) {
+    pub fn intersection_none(&mut self, base: &FlatSetIndex<K, V>, rhs: &U32Set) {
         self.inner.intersection_none(&base.inner, rhs)
     }
 }

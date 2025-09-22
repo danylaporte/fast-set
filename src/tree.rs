@@ -18,7 +18,7 @@ impl<K> Tree<K> {
     where
         K: Into<u32>,
     {
-        unsafe { IntSet::from_bitmap(self.erased.all_nodes()) }
+        unsafe { IntSet::from_set(self.erased.all_nodes()) }
     }
 
     #[inline]
@@ -31,7 +31,7 @@ impl<K> Tree<K> {
     where
         K: Into<u32>,
     {
-        unsafe { IntSet::from_bitmap_ref(self.erased.children(parent.into())) }
+        unsafe { IntSet::from_u32set_ref(self.erased.children(parent.into())) }
     }
 
     #[inline]
@@ -50,7 +50,7 @@ impl<K> Tree<K> {
     where
         K: Into<u32>,
     {
-        unsafe { IntSet::from_bitmap_ref(self.erased.descendants(parent.into())) }
+        unsafe { IntSet::from_u32set_ref(self.erased.descendants(parent.into())) }
     }
 
     #[inline]
@@ -177,7 +177,7 @@ impl<K> TreeIndexLog<K> {
     where
         K: Into<u32>,
     {
-        unsafe { IntSet::from_bitmap_ref(self.erased.children(&base.erased, parent.into())) }
+        unsafe { IntSet::from_u32set_ref(self.erased.children(&base.erased, parent.into())) }
     }
 
     #[inline]
@@ -200,7 +200,7 @@ impl<K> TreeIndexLog<K> {
     where
         K: Into<u32>,
     {
-        unsafe { IntSet::from_bitmap_ref(self.erased.descendants(&base.erased, parent.into())) }
+        unsafe { IntSet::from_u32set_ref(self.erased.descendants(&base.erased, parent.into())) }
     }
 
     #[inline]
@@ -282,7 +282,11 @@ impl<K> TreeIndexLog<K> {
     }
 
     #[inline]
-    pub fn ancestors<'a>(&'a self, base: &'a Tree<K>, child: K) -> impl Iterator<Item = K> + Clone + 'a
+    pub fn ancestors<'a>(
+        &'a self,
+        base: &'a Tree<K>,
+        child: K,
+    ) -> impl Iterator<Item = K> + Clone + 'a
     where
         K: From<u32> + Into<u32>,
     {
