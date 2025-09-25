@@ -3,7 +3,7 @@ use intern::IU32HashSet;
 use nohash::{IntMap, IntSet};
 use std::{
     collections::{hash_map::Entry, hash_set},
-    mem::replace,
+    mem::take,
     sync::OnceLock,
 };
 
@@ -181,9 +181,10 @@ impl Tree {
 impl FromIterator<(u32, Option<u32>)> for Tree {
     fn from_iter<I: IntoIterator<Item = (u32, Option<u32>)>>(iter: I) -> Self {
         let mut log = TreeLog::new();
+        let base = Tree::new();
 
         for (child, parent) in iter {
-            log.parents.insert(child, parent);
+            log.insert(&base, parent, child);
         }
 
         let mut tree = Tree::new();
@@ -429,8 +430,8 @@ impl TreeLog {
         // ----------------------------------------------------------
         // 1.  Gather the full subtree (node + descendants)
         // ----------------------------------------------------------
-        let desc = replace(self.descendants_mut(base, node), U32Set::default());
-        let chil = replace(self.children_mut(base, node), U32Set::default());
+        let desc = take(self.descendants_mut(base, node));
+        let chil = take(self.children_mut(base, node));
 
         // ----------------------------------------------------------
         // 2.  Record state for every node in the subtree
@@ -441,8 +442,8 @@ impl TreeLog {
             removed.insert(
                 id,
                 RemoveItem {
-                    children: replace(self.children_mut(base, id), U32Set::default()),
-                    descendants: replace(self.descendants_mut(base, id), U32Set::default()),
+                    children: take(self.children_mut(base, id)),
+                    descendants: take(self.descendants_mut(base, id)),
                     parent: self.parent_mut(base, id).take(),
                 },
             );
@@ -599,6 +600,7 @@ pub fn empty_tree_log() -> &'static TreeLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     /* ---------- helpers ---------- */
     fn collect_children(log: &TreeLog, base: &Tree, node: u32) -> Vec<u32> {
@@ -696,5 +698,138 @@ mod tests {
 
         assert_eq!(collect_children(&log, &other, 5), vec![5, 6, 7]);
         assert_eq!(collect_descendants(&log, &other, 5), vec![5, 6, 7]);
+    }
+
+    #[test]
+    fn from_iter_populates_children_and_descendants() {
+        let tree = vec![(1, None), (2, Some(1)), (3, Some(1)), (4, Some(2))]
+            .into_iter()
+            .collect::<Tree>();
+
+        assert_eq!(
+            tree.children(1).iter().copied().collect::<HashSet<_>>(),
+            HashSet::from([2, 3])
+        );
+        assert_eq!(
+            tree.descendants(1).iter().copied().collect::<HashSet<_>>(),
+            HashSet::from([2, 3, 4])
+        );
+        assert_eq!(tree.parent(2), Some(1));
+        assert_eq!(tree.parent(4), Some(2));
+    }
+
+    #[test]
+    fn empty_tree_invariants() {
+        let t = Tree::new();
+        assert!(t.all_nodes().is_empty());
+        assert_eq!(t.children(0).len(), 0);
+        assert_eq!(t.descendants(0).len(), 0);
+        assert_eq!(t.parent(0), None);
+        assert!(!t.has_cycle(0));
+        assert_eq!(t.depth(0), Ok(1));
+    }
+
+    #[test]
+    fn items_view_contains_self() {
+        let t = Tree::new();
+        let v = t.children_with_self(42);
+        assert!(v.contains(42));
+        assert!(!v.contains(43));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v.iter().collect::<Vec<_>>(), vec![42]);
+    }
+
+    #[test]
+    fn items_view_into_iterator() {
+        let t = Tree::new();
+        let v = t.descendants_with_self(7);
+        let mut it = v.into_iter();
+        assert_eq!(it.next(), Some(7));
+        assert_eq!(it.next(), None);
+    }
+
+    #[test]
+    fn ancestors_stops_at_cycle() {
+        let mut log = TreeLog::new();
+        let base = Tree::new();
+        log.insert(&base, None, 1);
+        log.insert(&base, Some(1), 2);
+        log.insert(&base, Some(2), 3);
+        log.insert(&base, Some(3), 1); // cycle
+
+        let anc: Vec<_> = log.ancestors(&base, 3).collect();
+        assert_eq!(anc, vec![]); // stops before re-entering cycle
+    }
+
+    #[test]
+    fn depth_ok_when_no_cycle() {
+        let mut log = TreeLog::new();
+        let base = Tree::new();
+        log.insert(&base, None, 10);
+        log.insert(&base, Some(10), 20);
+        log.insert(&base, Some(20), 30);
+
+        assert_eq!(log.depth(&base, 30), Ok(3));
+    }
+
+    #[test]
+    fn depth_err_on_cycle() {
+        let mut log = TreeLog::new();
+        let base = Tree::new();
+        log.insert(&base, None, 5);
+        log.insert(&base, Some(5), 6);
+        log.insert(&base, Some(6), 5); // cycle
+
+        assert_eq!(log.depth(&base, 6), Err(CycleError(6)));
+    }
+
+    #[test]
+    fn is_descendant_of_false_when_unrelated() {
+        let mut log = TreeLog::new();
+        let base = Tree::new();
+        log.insert(&base, None, 1);
+        log.insert(&base, None, 2);
+
+        assert!(!log.is_descendant_of(&base, 2, 1));
+    }
+
+    #[test]
+    fn remove_leaf_keeps_others_intact() {
+        let mut log = TreeLog::new();
+        let base = Tree::new();
+        log.insert(&base, None, 1);
+        log.insert(&base, Some(1), 2);
+        log.insert(&base, Some(1), 3);
+
+        log.remove(&base, 3);
+
+        assert_eq!(log.parent(&base, 3), None);
+        assert!(log.children(&base, 1).contains(&2));
+        assert!(!log.children(&base, 1).contains(&3));
+    }
+
+    #[test]
+    fn apply_empty_log_is_noop() {
+        let mut t = Tree::new();
+        let unchanged = t.apply(TreeLog::new());
+        assert!(!unchanged);
+    }
+
+    #[test]
+    fn from_iter_produces_consistent_state() {
+        let tree = vec![(1, None), (2, Some(1)), (3, Some(1)), (4, Some(2))]
+            .into_iter()
+            .collect::<Tree>();
+
+        assert!(tree.parent(1).is_none());
+        assert_eq!(tree.parent(2), Some(1));
+        assert_eq!(tree.parent(4), Some(2));
+
+        assert!(tree.children(1).contains(&2));
+        assert!(tree.children(1).contains(&3));
+        assert!(!tree.children(1).contains(&4)); // 4 is grand-child
+
+        assert!(tree.descendants(1).contains(&4));
+        assert_eq!(tree.descendants(1).len(), 3);
     }
 }

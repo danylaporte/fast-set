@@ -88,7 +88,7 @@ impl<K> IntSet<K> {
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.0.len() as usize
+        self.0.len()
     }
 
     #[inline]
