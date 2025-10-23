@@ -1,5 +1,5 @@
 use crate::{IU32HashSet, IntSet, U32Set, u32based};
-use fxhash::FxBuildHasher;
+use rustc_hash::FxBuildHasher;
 use std::{borrow::Borrow, collections::hash_map, hash::Hash, marker::PhantomData};
 
 #[repr(transparent)]

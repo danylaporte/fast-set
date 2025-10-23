@@ -6,9 +6,9 @@ use std::{
     hash::{BuildHasher, Hash, RandomState},
 };
 
-pub type U32FlatSetIndex = FlatSetIndex<u32, nohash::BuildNoHashHasher<u32>>;
-pub type U32FlatSetIndexBuilder = FlatSetIndexBuilder<u32, nohash::BuildNoHashHasher<u32>>;
-pub type U32FlatSetIndexLog = FlatSetIndexLog<u32, nohash::BuildNoHashHasher<u32>>;
+pub type U32FlatSetIndex = FlatSetIndex<u32, rustc_hash::FxBuildHasher>;
+pub type U32FlatSetIndexBuilder = FlatSetIndexBuilder<u32, rustc_hash::FxBuildHasher>;
+pub type U32FlatSetIndexLog = FlatSetIndexLog<u32, rustc_hash::FxBuildHasher>;
 
 pub struct FlatSetIndex<K, S = RandomState> {
     map: HashMap<K, IU32HashSet, S>,
@@ -71,11 +71,11 @@ impl<K, S> FlatSetIndex<K, S> {
             }
         }
 
-        if let Some(log) = log.none {
-            if self.none != log {
-                self.none = log.into();
-                changed = true;
-            }
+        if let Some(log) = log.none
+            && self.none != log
+        {
+            self.none = log.into();
+            changed = true;
         }
 
         changed
@@ -596,7 +596,7 @@ mod tests {
 
         for h in handles {
             let idx = h.join().unwrap();
-            assert!(idx.get(&0).as_set().len() > 0);
+            assert!(!idx.get(&0).as_set().is_empty());
         }
     }
 }

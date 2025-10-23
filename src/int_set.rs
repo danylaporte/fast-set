@@ -79,7 +79,7 @@ impl<K> IntSet<K> {
     }
 
     #[inline]
-    pub fn iter(&self) -> Iter<K>
+    pub fn iter(&self) -> Iter<'_, K>
     where
         K: From<u32>,
     {

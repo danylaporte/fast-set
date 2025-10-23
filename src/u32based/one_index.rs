@@ -1,5 +1,6 @@
-use nohash::IntMap;
 use std::collections::hash_map::Entry;
+
+use rustc_hash::FxHashMap;
 
 pub struct OneIndex<V> {
     data: Vec<Option<V>>,
@@ -135,13 +136,13 @@ where
 pub struct OneIndexLog<V>(
     // Some = insert / replace,
     // None = remove
-    IntMap<u32, Option<V>>,
+    FxHashMap<u32, Option<V>>,
 );
 
 impl<V> OneIndexLog<V> {
     #[inline]
     pub fn new() -> Self {
-        Self(IntMap::default())
+        Self(FxHashMap::default())
     }
 
     #[inline]

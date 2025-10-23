@@ -5,9 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-fxhash = "0.2"
-intern = { git = "https://github.com/danylaporte/intern.git", features = ["int_hashset"] }
-nohash = "0.2"
+intern = { git = "https://github.com/danylaporte/intern.git" }
+rustc-hash = "2.1"
 
 [dev-dependencies]
 dhat = "0.3"

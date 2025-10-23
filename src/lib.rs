@@ -13,7 +13,7 @@ pub use int_set::IntSet;
 use intern::U32HashSet;
 pub use tree::{Tree, TreeIndexLog};
 
-pub type U32Set = nohash::IntSet<u32>;
+pub type U32Set = rustc_hash::FxHashSet<u32>;
 
 #[doc(hidden)]
 pub use intern::IU32HashSet;

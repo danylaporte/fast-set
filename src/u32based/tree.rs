@@ -1,20 +1,20 @@
 use crate::{U32Set, empty_roaring};
 use intern::IU32HashSet;
-use nohash::{IntMap, IntSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     collections::{hash_map::Entry, hash_set},
     mem::take,
     sync::OnceLock,
 };
 
-type Set = IntSet<u32>;
+type Set = FxHashSet<u32>;
 
 #[derive(Clone, Default)]
 pub struct Tree {
-    children: IntMap<u32, IU32HashSet>,
+    children: FxHashMap<u32, IU32HashSet>,
     cycles: Set,
-    descendants: IntMap<u32, IU32HashSet>,
-    parents: IntMap<u32, u32>,
+    descendants: FxHashMap<u32, IU32HashSet>,
+    parents: FxHashMap<u32, u32>,
 }
 
 impl Tree {
@@ -41,8 +41,8 @@ impl Tree {
     /// Returns `true` if anything changed.
     pub fn apply(&mut self, log: TreeLog) -> bool {
         fn apply_bitmap(
-            target: &mut IntMap<u32, IU32HashSet>,
-            source: IntMap<u32, U32Set>,
+            target: &mut FxHashMap<u32, IU32HashSet>,
+            source: FxHashMap<u32, U32Set>,
         ) -> bool {
             let mut changed = false;
 
@@ -74,11 +74,11 @@ impl Tree {
         let mut changed = false;
 
         // ---------- cycles ----------
-        if let Some(c) = log.cycles {
-            if self.cycles != c {
-                self.cycles = c;
-                changed = true;
-            }
+        if let Some(c) = log.cycles
+            && self.cycles != c
+        {
+            self.cycles = c;
+            changed = true;
         }
 
         // ---------- parents ----------
@@ -260,10 +260,10 @@ impl<'a> IntoIterator for &'a ItemsView<'a> {
 
 #[derive(Clone, Default)]
 pub struct TreeLog {
-    children: IntMap<u32, U32Set>,
+    children: FxHashMap<u32, U32Set>,
     cycles: Option<Set>,
-    descendants: IntMap<u32, U32Set>,
-    parents: IntMap<u32, Option<u32>>,
+    descendants: FxHashMap<u32, U32Set>,
+    parents: FxHashMap<u32, Option<u32>>,
 }
 
 impl TreeLog {
@@ -354,7 +354,7 @@ impl TreeLog {
     /// Marks every node that belongs to a cycle **reachable from `start`**
     /// by walking the current (log + base) parent chain.
     fn detect_and_mark_cycles(&mut self, base: &Tree, start: u32) {
-        let mut seen = IntSet::default();
+        let mut seen = FxHashSet::default();
         let mut path = Vec::new();
         let mut cur = Some(start);
 
@@ -384,7 +384,7 @@ impl TreeLog {
             return;
         }
 
-        let mut visited = IntSet::default();
+        let mut visited = FxHashSet::default();
         let removed_items = self.remove_impl(base, child, &mut visited);
         self.reparent_subtree(base, parent, child, removed_items, &mut visited);
         self.detect_and_mark_cycles(base, child);
@@ -409,7 +409,7 @@ impl TreeLog {
     }
 
     pub fn remove(&mut self, base: &Tree, node: u32) {
-        let mut visited = IntSet::default();
+        let mut visited = FxHashSet::default();
         self.remove_impl(base, node, &mut visited);
 
         self.cycles_mut(base).clear();
@@ -425,8 +425,8 @@ impl TreeLog {
         &mut self,
         base: &Tree,
         node: u32,
-        visited: &mut IntSet<u32>,
-    ) -> IntMap<u32, RemoveItem> {
+        visited: &mut FxHashSet<u32>,
+    ) -> FxHashMap<u32, RemoveItem> {
         // ----------------------------------------------------------
         // 1.  Gather the full subtree (node + descendants)
         // ----------------------------------------------------------
@@ -436,7 +436,7 @@ impl TreeLog {
         // ----------------------------------------------------------
         // 2.  Record state for every node in the subtree
         // ----------------------------------------------------------
-        let mut removed = IntMap::default();
+        let mut removed = FxHashMap::default();
 
         for &id in desc.iter() {
             removed.insert(
@@ -492,8 +492,8 @@ impl TreeLog {
         base: &Tree,
         new_parent: Option<u32>,
         root: u32,
-        mut removed: IntMap<u32, RemoveItem>, // <- now mut
-        visited: &mut IntSet<u32>,
+        mut removed: FxHashMap<u32, RemoveItem>, // <- now mut
+        visited: &mut FxHashSet<u32>,
     ) {
         // 1. Re-attach root
         self.parents.insert(root, new_parent);
@@ -546,7 +546,7 @@ struct RemoveItem {
 pub struct TreeAncestorIter<'a> {
     child: Option<u32>,
     cycles: &'a Set,
-    parents: &'a IntMap<u32, u32>,
+    parents: &'a FxHashMap<u32, u32>,
 }
 
 impl Iterator for TreeAncestorIter<'_> {
@@ -610,9 +610,13 @@ mod tests {
     }
 
     fn collect_descendants(log: &TreeLog, base: &Tree, node: u32) -> Vec<u32> {
-        log.descendants_with_self(base, node)
+        let mut v = log
+            .descendants_with_self(base, node)
             .iter()
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        v.sort_unstable();
+        v
     }
 
     /* ---------- basic insert & remove ---------- */
