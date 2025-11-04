@@ -1,6 +1,5 @@
-use std::collections::hash_map::Entry;
-
 use rustc_hash::FxHashMap;
+use std::collections::hash_map::Entry;
 
 pub struct OneIndex<V> {
     data: Vec<Option<V>>,

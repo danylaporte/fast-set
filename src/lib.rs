@@ -11,6 +11,7 @@ pub use hash_flat_set_index::{
 };
 pub use int_set::IntSet;
 use intern::U32HashSet;
+use once_cell::sync::OnceCell;
 pub use tree::{Tree, TreeIndexLog};
 
 pub type U32Set = rustc_hash::FxHashSet<u32>;
@@ -19,11 +20,11 @@ pub type U32Set = rustc_hash::FxHashSet<u32>;
 pub use intern::IU32HashSet;
 
 fn empty_roaring() -> &'static U32HashSet {
-    static B: std::sync::OnceLock<U32HashSet> = std::sync::OnceLock::new();
+    static B: OnceCell<U32HashSet> = OnceCell::new();
     B.get_or_init(U32HashSet::default)
 }
 
 fn default_iu32_hashset() -> &'static IU32HashSet {
-    static B: std::sync::OnceLock<IU32HashSet> = std::sync::OnceLock::new();
+    static B: OnceCell<IU32HashSet> = OnceCell::new();
     B.get_or_init(|| U32HashSet::default().into())
 }

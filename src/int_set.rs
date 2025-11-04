@@ -1,10 +1,9 @@
+use crate::U32Set;
 use std::{
     collections::hash_set,
     marker::PhantomData,
     ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Sub, SubAssign},
 };
-
-use crate::U32Set;
 
 #[repr(transparent)]
 pub struct IntSet<K>(U32Set, PhantomData<K>);

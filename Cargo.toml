@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 intern = { git = "https://github.com/danylaporte/intern.git" }
+once_cell = { version = "1", features = ["parking_lot"] }
 rustc-hash = "2.1"
 
 [dev-dependencies]

@@ -1,10 +1,10 @@
 use crate::{U32Set, empty_roaring};
 use intern::IU32HashSet;
+use once_cell::sync::OnceCell;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     collections::{hash_map::Entry, hash_set},
     mem::take,
-    sync::OnceLock,
 };
 
 type Set = FxHashSet<u32>;
@@ -588,12 +588,12 @@ impl Iterator for TreeLogAncestorIter<'_> {
 }
 
 pub fn empty_tree() -> &'static Tree {
-    static EMPTY: OnceLock<Tree> = OnceLock::new();
+    static EMPTY: OnceCell<Tree> = OnceCell::new();
     EMPTY.get_or_init(Tree::default)
 }
 
 pub fn empty_tree_log() -> &'static TreeLog {
-    static EMPTY: OnceLock<TreeLog> = OnceLock::new();
+    static EMPTY: OnceCell<TreeLog> = OnceCell::new();
     EMPTY.get_or_init(TreeLog::default)
 }
 
