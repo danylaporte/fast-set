@@ -60,20 +60,22 @@ impl<K, V> FlatSetIndex<K, V> {
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (K, &IntSet<V>)>
     where
-        K: From<u32>,
+        K: TryFrom<u32>,
         V: Into<u32>,
     {
-        self.inner
-            .iter()
-            .map(|(k, v)| (K::from(*k), unsafe { IntSet::from_u32set_ref(v.as_set()) }))
+        self.inner.iter().filter_map(|(k, v)| {
+            Some((K::try_from(*k).ok()?, unsafe {
+                IntSet::from_u32set_ref(v.as_set())
+            }))
+        })
     }
 
     #[inline]
-    pub fn keys(&self) -> impl ExactSizeIterator<Item = K>
+    pub fn keys(&self) -> impl Clone + Iterator<Item = K>
     where
-        K: From<u32>,
+        K: TryFrom<u32>,
     {
-        self.inner.keys().copied().map(K::from)
+        self.inner.keys().filter_map(|k| K::try_from(*k).ok())
     }
 
     #[inline]
@@ -138,7 +140,7 @@ impl<K, V> FlatSetIndexBuilder<K, V> {
     #[inline]
     pub fn difference(&mut self, key: K, rhs: &IntSet<V>)
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.log.difference(&self.base, key, rhs.as_set());
     }
@@ -151,7 +153,7 @@ impl<K, V> FlatSetIndexBuilder<K, V> {
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> bool
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
         V: Into<u32>,
     {
         self.log.insert(&self.base, key, value)
@@ -168,7 +170,7 @@ impl<K, V> FlatSetIndexBuilder<K, V> {
     #[inline]
     pub fn intersection(&mut self, key: K, rhs: &IntSet<V>)
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.log.intersection(&self.base, key, rhs.as_set());
     }
@@ -181,7 +183,7 @@ impl<K, V> FlatSetIndexBuilder<K, V> {
     #[inline]
     pub fn remove(&mut self, key: K, value: V) -> bool
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
         V: Into<u32>,
     {
         self.log.remove(&self.base, key, value)
@@ -198,7 +200,7 @@ impl<K, V> FlatSetIndexBuilder<K, V> {
     #[inline]
     pub fn union(&mut self, key: K, rhs: &IntSet<V>)
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.log.union(&self.base, key, rhs.as_set());
     }

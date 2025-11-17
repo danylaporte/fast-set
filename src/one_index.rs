@@ -38,9 +38,11 @@ impl<K, V> OneIndex<K, V> {
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (K, &V)> + '_
     where
-        K: From<u32>,
+        K: TryFrom<u32>,
     {
-        self.index.iter().map(|(k, v)| (K::from(k), v))
+        self.index
+            .iter()
+            .filter_map(|(k, v)| Some((K::try_from(k).ok()?, v)))
     }
 
     #[inline]
@@ -51,9 +53,9 @@ impl<K, V> OneIndex<K, V> {
     #[inline]
     pub fn keys(&self) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32>,
+        K: TryFrom<u32>,
     {
-        self.index.keys().map(K::from)
+        self.index.keys().filter_map(|k| K::try_from(k).ok())
     }
 }
 

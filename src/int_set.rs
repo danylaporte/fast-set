@@ -80,7 +80,7 @@ impl<K> IntSet<K> {
     #[inline]
     pub fn iter(&self) -> Iter<'_, K>
     where
-        K: From<u32>,
+        K: TryFrom<u32>,
     {
         Iter(self.0.iter(), PhantomData)
     }
@@ -127,7 +127,7 @@ where
 
 impl<K> IntoIterator for IntSet<K>
 where
-    K: From<u32>,
+    K: TryFrom<u32>,
 {
     type Item = K;
     type IntoIter = IntoIter<K>;
@@ -140,7 +140,7 @@ where
 
 impl<'a, K> IntoIterator for &'a IntSet<K>
 where
-    K: From<u32>,
+    K: TryFrom<u32>,
 {
     type Item = K;
     type IntoIter = Iter<'a, K>;
@@ -162,13 +162,13 @@ pub struct IntoIter<K>(hash_set::IntoIter<u32>, PhantomData<K>);
 
 impl<K> Iterator for IntoIter<K>
 where
-    K: From<u32>,
+    K: TryFrom<u32>,
 {
     type Item = K;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(K::from)
+        self.0.next().and_then(|k| K::try_from(k).ok())
     }
 
     #[inline]
@@ -177,27 +177,17 @@ where
     }
 }
 
-impl<K> ExactSizeIterator for IntoIter<K>
-where
-    K: From<u32>,
-{
-    #[inline]
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
 pub struct Iter<'a, K>(hash_set::Iter<'a, u32>, PhantomData<K>);
 
 impl<K> Iterator for Iter<'_, K>
 where
-    K: From<u32>,
+    K: TryFrom<u32>,
 {
     type Item = K;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|v| K::from(*v))
+        self.0.next().and_then(|v| K::try_from(*v).ok())
     }
 
     #[inline]
@@ -208,7 +198,7 @@ where
 
 impl<K> ExactSizeIterator for Iter<'_, K>
 where
-    K: From<u32>,
+    K: TryFrom<u32>,
 {
     #[inline]
     fn len(&self) -> usize {

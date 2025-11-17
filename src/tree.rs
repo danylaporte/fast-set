@@ -1,5 +1,5 @@
 use crate::{IntSet, u32based};
-use std::marker::PhantomData;
+use std::{fmt::Debug, marker::PhantomData};
 
 #[repr(transparent)]
 pub struct Tree<K> {
@@ -37,12 +37,12 @@ impl<K> Tree<K> {
     #[inline]
     pub fn children_with_self(&self, node: K) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.erased
             .children_with_self(node.into())
             .into_iter()
-            .map(K::from)
+            .filter_map(|k| K::try_from(k).ok())
     }
 
     #[inline]
@@ -56,38 +56,41 @@ impl<K> Tree<K> {
     #[inline]
     pub fn descendants_with_self(&self, node: K) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.erased
             .descendants_with_self(node.into())
             .into_iter()
-            .map(K::from)
+            .filter_map(|k| K::try_from(k).ok())
     }
 
     #[inline]
     pub fn cycles(&self) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32>,
+        K: TryFrom<u32>,
     {
-        self.erased.cycles().copied().map(K::from)
+        self.erased.cycles().filter_map(|k| K::try_from(*k).ok())
     }
 
     #[inline]
     pub fn parent(&self, child: K) -> Option<K>
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
-        self.erased.parent(child.into()).map(Into::into)
+        self.erased
+            .parent(child.into())
+            .and_then(|k| K::try_from(k).ok())
     }
 
     #[inline]
     pub fn depth(&self, node: K) -> Result<usize, CycleError<K>>
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
+        K::Error: Debug,
     {
         self.erased
             .depth(node.into())
-            .map_err(|e| CycleError(K::from(e.0)))
+            .map_err(|e| CycleError(K::try_from(e.0).expect("K")))
     }
 
     #[inline]
@@ -109,19 +112,21 @@ impl<K> Tree<K> {
     #[inline]
     pub fn ancestors(&self, child: K) -> impl Iterator<Item = K> + Clone + '_
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
-        self.erased.ancestors(child.into()).map(Into::into)
+        self.erased
+            .ancestors(child.into())
+            .filter_map(|k| K::try_from(k).ok())
     }
 
     #[inline]
     pub fn ancestors_with_self(&self, child: K) -> impl Iterator<Item = K> + Clone + '_
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.erased
             .ancestors_with_self(child.into())
-            .map(Into::into)
+            .filter_map(|k| K::try_from(k).ok())
     }
 }
 
@@ -185,14 +190,14 @@ impl<K> TreeIndexLog<K> {
         &'a self,
         base: &'a Tree<K>,
         node: K,
-    ) -> impl Iterator<Item = K> + 'a
+    ) -> impl Clone + Iterator<Item = K> + 'a
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.erased
             .children_with_self(&base.erased, node.into())
             .into_iter()
-            .map(K::from)
+            .filter_map(|k| K::try_from(k).ok())
     }
 
     #[inline]
@@ -210,33 +215,33 @@ impl<K> TreeIndexLog<K> {
         node: K,
     ) -> impl Iterator<Item = K> + 'a
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.erased
             .descendants_with_self(&base.erased, node.into())
             .into_iter()
-            .map(K::from)
+            .filter_map(|k| K::try_from(k).ok())
     }
 
     #[inline]
     pub fn cycles<'a>(&'a self, base: &'a Tree<K>) -> impl Iterator<Item = K> + 'a
     where
-        K: From<u32>,
+        K: TryFrom<u32>,
     {
         self.erased
             .cycles(&base.erased)
             .iter()
-            .copied()
-            .map(K::from)
+            .filter_map(|k| K::try_from(*k).ok())
     }
 
     pub fn depth(&self, base: &Tree<K>, node: K) -> Result<usize, CycleError<K>>
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
+        K::Error: Debug,
     {
         self.erased
             .depth(&base.erased, node.into())
-            .map_err(|e| CycleError(K::from(e.0)))
+            .map_err(|e| CycleError(K::try_from(e.0).expect("k")))
     }
 
     #[inline]
@@ -250,9 +255,11 @@ impl<K> TreeIndexLog<K> {
     #[inline]
     pub fn parent(&self, base: &Tree<K>, child: K) -> Option<K>
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
-        self.erased.parent(&base.erased, child.into()).map(K::from)
+        self.erased
+            .parent(&base.erased, child.into())
+            .and_then(|k| K::try_from(k).ok())
     }
 
     #[inline]
@@ -286,13 +293,13 @@ impl<K> TreeIndexLog<K> {
         &'a self,
         base: &'a Tree<K>,
         child: K,
-    ) -> impl Iterator<Item = K> + Clone + 'a
+    ) -> impl Clone + Iterator<Item = K> + Clone + 'a
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.erased
             .ancestors(&base.erased, child.into())
-            .map(K::from)
+            .filter_map(|k| K::try_from(k).ok())
     }
 
     #[inline]
@@ -300,13 +307,13 @@ impl<K> TreeIndexLog<K> {
         &'a self,
         base: &'a Tree<K>,
         child: K,
-    ) -> impl Iterator<Item = K> + Clone + 'a
+    ) -> impl Clone + Iterator<Item = K> + Clone + 'a
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.erased
             .ancestors_with_self(&base.erased, child.into())
-            .map(K::from)
+            .filter_map(|k| K::try_from(k).ok())
     }
 }
 
@@ -343,7 +350,7 @@ impl<'a, K> TreeTrx<'a, K> {
     #[inline]
     pub fn ancestors(&self, child: K) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         let mut iter = self.ancestors_with_self(child);
         iter.next();
@@ -354,7 +361,7 @@ impl<'a, K> TreeTrx<'a, K> {
     #[inline]
     pub fn ancestors_with_self(&self, child: K) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.log.ancestors_with_self(self.base, child)
     }
@@ -370,7 +377,7 @@ impl<'a, K> TreeTrx<'a, K> {
     #[inline]
     pub fn children_with_self(&self, node: K) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.log.children_with_self(self.base, node)
     }
@@ -379,7 +386,7 @@ impl<'a, K> TreeTrx<'a, K> {
     #[inline]
     pub fn cycles(&self) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32>,
+        K: TryFrom<u32>,
     {
         self.log.cycles(self.base)
     }
@@ -387,7 +394,8 @@ impl<'a, K> TreeTrx<'a, K> {
     #[inline]
     pub fn depth(&self, node: K) -> Result<usize, CycleError<K>>
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
+        K::Error: Debug,
     {
         self.log.depth(self.base, node)
     }
@@ -403,7 +411,7 @@ impl<'a, K> TreeTrx<'a, K> {
     #[inline]
     pub fn descendants_with_self(&self, parent: K) -> impl Iterator<Item = K> + '_
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.log.descendants_with_self(self.base, parent)
     }
@@ -427,7 +435,7 @@ impl<'a, K> TreeTrx<'a, K> {
     #[inline]
     pub fn parent(&self, child: K) -> Option<K>
     where
-        K: From<u32> + Into<u32>,
+        K: TryFrom<u32> + Into<u32>,
     {
         self.log.parent(self.base, child)
     }
