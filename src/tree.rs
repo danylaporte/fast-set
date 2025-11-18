@@ -14,11 +14,14 @@ impl<K> Tree<K> {
     }
 
     #[inline]
-    pub fn all_nodes(&self) -> IntSet<K>
+    pub fn all_nodes(&self) -> impl Clone + Iterator<Item = K>
     where
-        K: Into<u32>,
+        K: TryFrom<u32>,
     {
-        unsafe { IntSet::from_set(self.erased.all_nodes()) }
+        self.erased
+            .all_nodes()
+            .iter()
+            .filter_map(|v| K::try_from(*v).ok())
     }
 
     #[inline]

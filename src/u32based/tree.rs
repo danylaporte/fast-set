@@ -11,6 +11,7 @@ type Set = FxHashSet<u32>;
 
 #[derive(Clone, Default)]
 pub struct Tree {
+    all: FxHashSet<u32>,
     children: FxHashMap<u32, IU32HashSet>,
     cycles: Set,
     descendants: FxHashMap<u32, IU32HashSet>,
@@ -84,13 +85,22 @@ impl Tree {
         // ---------- parents ----------
         for (child, new_parent) in log.parents {
             changed |= match new_parent {
-                Some(p) => self.parents.insert(child, p).is_none() || self.parents[&child] != p,
+                Some(p) => self.parents.insert(child, p).is_none_or(|old| old != p),
                 None => self.parents.remove(&child).is_some(),
+            };
+        }
+
+        for (node, insert) in log.all {
+            changed |= if insert {
+                self.all.insert(node)
+            } else {
+                self.all.remove(&node)
             };
         }
 
         if changed {
             self.parents.shrink_to_fit();
+            self.all.shrink_to_fit();
         }
 
         // ---------- children & descendants ----------
@@ -100,20 +110,9 @@ impl Tree {
         changed
     }
 
-    pub fn all_nodes(&self) -> U32Set {
-        let mut b = U32Set::default();
-
-        for (&c, set) in &self.children {
-            b.insert(c);
-            b.extend(set.as_set().iter().copied());
-        }
-
-        for (&p, &n) in &self.parents {
-            b.insert(p);
-            b.insert(n);
-        }
-
-        b
+    #[inline]
+    pub fn all_nodes(&self) -> &FxHashSet<u32> {
+        &self.all
     }
 
     pub fn children(&self, node: u32) -> &U32Set {
@@ -260,6 +259,7 @@ impl<'a> IntoIterator for &'a ItemsView<'a> {
 
 #[derive(Clone, Default)]
 pub struct TreeLog {
+    all: FxHashMap<u32, bool>,
     children: FxHashMap<u32, U32Set>,
     cycles: Option<Set>,
     descendants: FxHashMap<u32, U32Set>,
@@ -380,6 +380,12 @@ impl TreeLog {
     }
 
     pub fn insert(&mut self, base: &Tree, parent: Option<u32>, child: u32) {
+        self.all.insert(child, true);
+
+        if let Some(p) = parent {
+            self.all.insert(p, true);
+        }
+
         if self.parent(base, child) == parent {
             return;
         }
@@ -483,6 +489,10 @@ impl TreeLog {
             },
         );
 
+        for id in removed.keys() {
+            self.all.insert(*id, false);
+        }
+
         removed
     }
 
@@ -492,7 +502,7 @@ impl TreeLog {
         base: &Tree,
         new_parent: Option<u32>,
         root: u32,
-        mut removed: FxHashMap<u32, RemoveItem>, // <- now mut
+        mut removed: FxHashMap<u32, RemoveItem>,
         visited: &mut FxHashSet<u32>,
     ) {
         // 1. Re-attach root
@@ -524,10 +534,13 @@ impl TreeLog {
         self.children.insert(root, item.children);
         self.descendants.insert(root, item.descendants);
 
+        self.all.insert(root, true);
+
         for (node, item) in removed {
             self.parents.insert(node, item.parent);
             self.children.insert(node, item.children);
             self.descendants.insert(node, item.descendants);
+            self.all.insert(node, true);
         }
     }
 }
@@ -835,5 +848,171 @@ mod tests {
 
         assert!(tree.descendants(1).contains(&4));
         assert_eq!(tree.descendants(1).len(), 3);
+    }
+
+    #[test]
+    fn all_nodes_correctly_tracks_all_inserted_and_removed_nodes() {
+        let mut log = TreeLog::new();
+        let base = Tree::new();
+        let mut tree = Tree::new();
+
+        // Phase 1: Insert nodes and verify all are tracked (including parents)
+
+        // Insert root node
+        log.insert(&base, None, 1);
+        tree.apply(log.clone());
+        assert_eq!(tree.all_nodes().len(), 1);
+        assert!(tree.all_nodes().contains(&1));
+
+        // Insert child with parent - both should be present
+        log.insert(&base, Some(1), 2);
+        tree.apply(log.clone());
+        assert_eq!(tree.all_nodes().len(), 2);
+        assert!(tree.all_nodes().contains(&1), "Parent should remain");
+        assert!(tree.all_nodes().contains(&2), "Child should be added");
+
+        // Build more complex structure: 1 -> {2,3}, 2 -> 4, 3 -> 5
+        log.insert(&base, Some(1), 3);
+        log.insert(&base, Some(2), 4);
+        log.insert(&base, Some(3), 5);
+        tree.apply(log.clone());
+
+        assert_eq!(tree.all_nodes().len(), 5);
+        for node in &[1, 2, 3, 4, 5] {
+            assert!(
+                tree.all_nodes().contains(node),
+                "Node {} should be tracked",
+                node
+            );
+        }
+
+        // Phase 2: Remove nodes and verify updates
+
+        // Remove leaf node 5 - should be gone but parent remains
+        log.remove(&base, 5);
+        tree.apply(log.clone());
+        assert!(
+            !tree.all_nodes().contains(&5),
+            "Leaf node should be removed"
+        );
+        assert_eq!(tree.all_nodes().len(), 4);
+        assert!(
+            tree.all_nodes().contains(&3),
+            "Parent of leaf should remain"
+        );
+
+        // Remove subtree root 2 (removes 2 and 4)
+        log.remove(&base, 2);
+        tree.apply(log.clone());
+        assert!(
+            !tree.all_nodes().contains(&2),
+            "Subtree root should be removed"
+        );
+        assert!(
+            !tree.all_nodes().contains(&4),
+            "Descendant should be removed"
+        );
+        assert_eq!(tree.all_nodes().len(), 2);
+        assert!(tree.all_nodes().contains(&1));
+        assert!(tree.all_nodes().contains(&3));
+
+        // Remove root node 1 (removes entire remaining tree)
+        log.remove(&base, 1);
+        tree.apply(log.clone());
+        assert!(
+            tree.all_nodes().is_empty(),
+            "All nodes should be removed after root removal"
+        );
+
+        // Phase 3: Edge cases
+
+        // Parent-only node (appears only as parent, never as child)
+        let mut log2 = TreeLog::new();
+        log2.insert(&base, Some(100), 200);
+        let mut tree2 = Tree::new();
+        tree2.apply(log2);
+        assert_eq!(tree2.all_nodes().len(), 2);
+        assert!(
+            tree2.all_nodes().contains(&100),
+            "Parent-only node should be included"
+        );
+        assert!(tree2.all_nodes().contains(&200));
+
+        // from_iter constructor includes parents
+        let tree3 = vec![(10, None), (20, Some(10)), (30, Some(10))]
+            .into_iter()
+            .collect::<Tree>();
+        assert_eq!(tree3.all_nodes().len(), 3);
+        assert!(
+            tree3.all_nodes().contains(&10),
+            "Parent from iter should be included"
+        );
+
+        // Re-insert after clearing
+        log.insert(&base, None, 10);
+        log.insert(&base, Some(10), 20);
+        tree.apply(log);
+        assert_eq!(tree.all_nodes().len(), 2);
+        assert!(tree.all_nodes().contains(&10));
+        assert!(tree.all_nodes().contains(&20));
+    }
+
+    #[test]
+    fn all_nodes_tracks_all_nodes_across_operations() {
+        let mut tree = Tree::new();
+        let base = Tree::new();
+        let mut log = TreeLog::new();
+
+        // Phase 1: Insert hierarchy and verify all nodes are tracked
+        log.insert(&base, None, 1);
+        log.insert(&base, Some(1), 2);
+        log.insert(&base, Some(1), 3);
+        tree.apply(log.clone());
+
+        assert_eq!(tree.all_nodes().len(), 3);
+        for node in &[1, 2, 3] {
+            assert!(
+                tree.all_nodes().contains(node),
+                "Node {} missing after insert",
+                node
+            );
+        }
+
+        // Phase 2: Remove leaf and verify parent remains
+        let mut log2 = TreeLog::new();
+        log2.remove(&tree, 3);
+        tree.apply(log2);
+
+        assert_eq!(tree.all_nodes().len(), 2);
+        assert!(tree.all_nodes().contains(&1));
+        assert!(tree.all_nodes().contains(&2));
+        assert!(!tree.all_nodes().contains(&3));
+
+        // Phase 3: Remove root and verify subtree is gone
+        let mut log3 = TreeLog::new();
+        log3.remove(&tree, 1);
+        tree.apply(log3);
+
+        assert!(tree.all_nodes().is_empty(), "All nodes should be removed");
+
+        // Phase 4: Insert with non-existent parent (implicit parent creation)
+        let mut log4 = TreeLog::new();
+        log4.insert(&base, Some(10), 20); // Parent 10 is created implicitly
+        tree.apply(log4);
+
+        assert_eq!(tree.all_nodes().len(), 2);
+        assert!(
+            tree.all_nodes().contains(&10),
+            "Parent created implicitly should be in all"
+        );
+        assert!(tree.all_nodes().contains(&20));
+
+        // Phase 5: Verify from_iter includes all nodes
+        let tree2 = vec![(100, None), (200, Some(100))]
+            .into_iter()
+            .collect::<Tree>();
+        assert_eq!(tree2.all_nodes().len(), 2);
+        assert!(tree2.all_nodes().contains(&100));
+        assert!(tree2.all_nodes().contains(&200));
     }
 }
