@@ -71,12 +71,41 @@ impl<V> OneIndex<V> {
             }
         }
 
+        self.trim();
+
         changes
     }
 
     #[inline]
     pub fn get(&self, index: u32) -> Option<&V> {
         self.data.get(index as usize).and_then(|v| v.as_ref())
+    }
+
+    /// Direct write used while building; returns whether anything changed.
+    pub(crate) fn insert(&mut self, index: u32, value: V) -> bool
+    where
+        V: PartialEq,
+    {
+        let index = index as usize;
+
+        if self.data.len() <= index {
+            self.data.resize_with(index + 1, || None);
+        }
+
+        let slot = &mut self.data[index];
+
+        match slot {
+            Some(old) if *old == value => false,
+            Some(old) => {
+                *old = value;
+                true
+            }
+            None => {
+                *slot = Some(value);
+                self.len += 1;
+                true
+            }
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u32, &V)> + '_ {
@@ -102,6 +131,20 @@ impl<V> OneIndex<V> {
             .enumerate()
             .filter_map(|(i, v)| v.as_ref().map(|_| i as u32))
     }
+
+    /// Drops trailing empty slots so iteration and memory track the highest live key.
+    fn trim(&mut self) {
+        let live = self
+            .data
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |i| i + 1);
+        self.data.truncate(live);
+
+        if self.data.capacity() > 2 * self.data.len() + 16 {
+            self.data.shrink_to_fit();
+        }
+    }
 }
 
 impl<V> Default for OneIndex<V> {
@@ -115,20 +158,18 @@ impl<V> FromIterator<(u32, V)> for OneIndex<V>
 where
     V: PartialEq,
 {
-    #[inline]
     fn from_iter<I>(iter: I) -> Self
     where
         I: IntoIterator<Item = (u32, V)>,
     {
-        let mut base = OneIndex::new();
-        let mut log = OneIndexLog::new();
+        let iter = iter.into_iter();
+        let mut index = OneIndex::with_capacity(iter.size_hint().0);
 
         for (k, v) in iter {
-            log.insert(&base, k, v);
+            index.insert(k, v);
         }
 
-        base.apply(log);
-        base
+        index
     }
 }
 
@@ -176,7 +217,7 @@ impl<V> OneIndexLog<V> {
     {
         match self.0.entry(index) {
             Entry::Vacant(e) => {
-                if base.data.get(index as usize).is_some() {
+                if base.get(index).is_some() {
                     e.insert(None);
                 }
             }
@@ -191,5 +232,86 @@ impl<V> Default for OneIndexLog<V> {
     #[inline]
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_iter_last_write_wins_and_tracks_len() {
+        let idx: OneIndex<&str> = vec![(5, "a"), (1, "b"), (5, "c")].into_iter().collect();
+
+        assert_eq!(idx.len(), 2);
+        assert_eq!(idx.get(5), Some(&"c"));
+        assert_eq!(idx.get(1), Some(&"b"));
+        assert_eq!(idx.get(3), None);
+        assert_eq!(idx.get(99), None);
+        assert_eq!(idx.keys().collect::<Vec<_>>(), vec![1, 5]);
+    }
+
+    #[test]
+    fn insert_reports_changes() {
+        let mut idx = OneIndex::new();
+
+        assert!(idx.insert(2, 10));
+        assert!(!idx.insert(2, 10));
+        assert!(idx.insert(2, 11));
+        assert_eq!(idx.len(), 1);
+    }
+
+    #[test]
+    fn apply_trims_trailing_empty_slots() {
+        let mut idx: OneIndex<u32> = (0..10).map(|k| (k, k)).collect();
+        let mut log = OneIndexLog::new();
+
+        for k in 5..10 {
+            log.remove(&idx, k);
+        }
+
+        assert!(idx.apply(log));
+        assert_eq!(idx.len(), 5);
+        assert_eq!(idx.data.len(), 5);
+        assert_eq!(
+            idx.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            (0..5).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn log_skips_noops() {
+        let base: OneIndex<u32> = (0..4).map(|k| (k, k)).collect();
+        let mut log = OneIndexLog::new();
+
+        log.insert(&base, 1, 1);
+        log.remove(&base, 7);
+        assert!(log.0.is_empty());
+
+        log.insert(&base, 1, 2);
+        log.remove(&base, 3);
+        assert_eq!(log.get(&base, 1), Some(&2));
+        assert_eq!(log.get(&base, 3), None);
+        assert_eq!(log.get(&base, 0), Some(&0));
+
+        let mut idx: OneIndex<u32> = (0..4).map(|k| (k, k)).collect();
+        assert!(idx.apply(log));
+        assert_eq!(idx.get(1), Some(&2));
+        assert_eq!(idx.get(3), None);
+        assert_eq!(idx.len(), 3);
+    }
+
+    #[test]
+    fn apply_grows_and_counts() {
+        let mut idx = OneIndex::new();
+        let mut log = OneIndexLog::new();
+
+        log.insert(&idx, 100, 'x');
+        log.insert(&idx, 3, 'y');
+
+        assert!(idx.apply(log));
+        assert_eq!(idx.len(), 2);
+        assert_eq!(idx.get(100), Some(&'x'));
+        assert!(!idx.apply(OneIndexLog::new()));
     }
 }

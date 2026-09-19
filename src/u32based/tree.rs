@@ -2,12 +2,11 @@ use crate::{U32Set, empty_roaring};
 use intern::IU32HashSet;
 use once_cell::sync::OnceCell;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{
-    collections::{hash_map::Entry, hash_set},
-    mem::take,
-};
+use std::collections::{hash_map::Entry, hash_set};
 
 type Set = FxHashSet<u32>;
+type LogSets = FxHashMap<u32, U32Set>;
+type BaseSets = FxHashMap<u32, IU32HashSet>;
 
 #[derive(Clone, Default)]
 pub struct Tree {
@@ -41,10 +40,7 @@ impl Tree {
     /// Applies an entire `TreeLog` snapshot to this tree.
     /// Returns `true` if anything changed.
     pub fn apply(&mut self, log: TreeLog) -> bool {
-        fn apply_bitmap(
-            target: &mut FxHashMap<u32, IU32HashSet>,
-            source: FxHashMap<u32, U32Set>,
-        ) -> bool {
+        fn apply_sets(target: &mut BaseSets, source: LogSets) -> bool {
             let mut changed = false;
 
             for (k, b) in source {
@@ -65,7 +61,7 @@ impl Tree {
                 }
             }
 
-            if changed {
+            if changed && is_sparse(target.capacity(), target.len()) {
                 target.shrink_to_fit();
             }
 
@@ -99,13 +95,17 @@ impl Tree {
         }
 
         if changed {
-            self.parents.shrink_to_fit();
-            self.all.shrink_to_fit();
+            if is_sparse(self.parents.capacity(), self.parents.len()) {
+                self.parents.shrink_to_fit();
+            }
+            if is_sparse(self.all.capacity(), self.all.len()) {
+                self.all.shrink_to_fit();
+            }
         }
 
         // ---------- children & descendants ----------
-        changed |= apply_bitmap(&mut self.children, log.children);
-        changed |= apply_bitmap(&mut self.descendants, log.descendants);
+        changed |= apply_sets(&mut self.children, log.children);
+        changed |= apply_sets(&mut self.descendants, log.descendants);
 
         changed
     }
@@ -260,9 +260,9 @@ impl<'a> IntoIterator for &'a ItemsView<'a> {
 #[derive(Clone, Default)]
 pub struct TreeLog {
     all: FxHashMap<u32, bool>,
-    children: FxHashMap<u32, U32Set>,
+    children: LogSets,
     cycles: Option<Set>,
-    descendants: FxHashMap<u32, U32Set>,
+    descendants: LogSets,
     parents: FxHashMap<u32, Option<u32>>,
 }
 
@@ -294,9 +294,7 @@ impl TreeLog {
     }
 
     fn children_mut(&mut self, base: &Tree, node: u32) -> &mut U32Set {
-        self.children
-            .entry(node)
-            .or_insert_with(|| base.children(node).clone())
+        set_mut(&mut self.children, &base.children, node)
     }
 
     #[inline]
@@ -337,12 +335,6 @@ impl TreeLog {
             .unwrap_or_else(|| base.descendants(node))
     }
 
-    fn descendants_mut(&mut self, base: &Tree, node: u32) -> &mut U32Set {
-        self.descendants
-            .entry(node)
-            .or_insert_with(|| base.descendants(node).clone())
-    }
-
     #[inline]
     pub fn descendants_with_self<'a>(&'a self, base: &'a Tree, node: u32) -> ItemsView<'a> {
         ItemsView {
@@ -351,26 +343,27 @@ impl TreeLog {
         }
     }
 
-    /// Marks every node that belongs to a cycle **reachable from `start`**
-    /// by walking the current (log + base) parent chain.
-    fn detect_and_mark_cycles(&mut self, base: &Tree, start: u32) {
-        let mut seen = FxHashSet::default();
-        let mut path = Vec::new();
-        let mut cur = Some(start);
+    /// Marks or unmarks every node of the loop that passes through `start`.
+    fn set_cycle(&mut self, base: &Tree, start: u32, marked: bool) {
+        let mut budget = self.walk_budget(base);
+        let mut cur = start;
 
-        while let Some(node) = cur {
-            if seen.contains(&node) {
-                // found a cycle; mark every node in the loop
-                let idx = path.iter().position(|&x| x == node).unwrap();
-                for &n in &path[idx..] {
-                    self.cycles_mut(base).insert(n);
-                }
-                self.cycles_mut(base).insert(node);
-                break;
+        loop {
+            let cycles = self.cycles_mut(base);
+
+            if marked {
+                cycles.insert(cur);
+            } else {
+                cycles.remove(&cur);
             }
-            seen.insert(node);
-            path.push(node);
-            cur = self.parent(base, node);
+
+            match self.parent(base, cur) {
+                Some(p) if p != start && budget > 0 => {
+                    budget -= 1;
+                    cur = p;
+                }
+                _ => break,
+            }
         }
     }
 
@@ -386,19 +379,50 @@ impl TreeLog {
             self.all.insert(p, true);
         }
 
-        if self.parent(base, child) == parent {
+        let old_parent = self.parent(base, child);
+
+        if old_parent == parent {
             return;
         }
 
-        let mut visited = FxHashSet::default();
-        let removed_items = self.remove_impl(base, child, &mut visited);
-        self.reparent_subtree(base, parent, child, removed_items, &mut visited);
-        self.detect_and_mark_cycles(base, child);
+        if let Some(op) = old_parent {
+            self.detach(base, child, op);
+        }
+
+        self.parents.insert(child, parent);
+
+        if let Some(np) = parent {
+            self.attach(base, child, np);
+        }
+    }
+
+    /// Descendant sets ignore the single edge that closes a loop (the "back-edge"),
+    /// so they always describe a forest. `node -> parent` is that edge when `parent`
+    /// already sits below `node`.
+    #[inline]
+    fn is_back_edge(&self, base: &Tree, node: u32, parent: u32) -> bool {
+        parent == node || self.descendants(base, node).contains(&parent)
     }
 
     #[inline]
     pub fn is_descendant_of(&self, base: &Tree, child: u32, parent: u32) -> bool {
         self.descendants(base, parent).contains(&child)
+    }
+
+    /// Follows the parent chain from `start` until the node owning the back-edge.
+    fn back_edge_owner(&self, base: &Tree, start: u32) -> u32 {
+        let mut budget = self.walk_budget(base);
+        let mut cur = start;
+
+        loop {
+            match self.parent(base, cur) {
+                Some(p) if budget > 0 && !self.is_back_edge(base, cur, p) => {
+                    budget -= 1;
+                    cur = p;
+                }
+                _ => return cur,
+            }
+        }
     }
 
     pub fn parent(&self, base: &Tree, child: u32) -> Option<u32> {
@@ -408,152 +432,177 @@ impl TreeLog {
         }
     }
 
-    fn parent_mut(&mut self, base: &Tree, child: u32) -> &mut Option<u32> {
-        self.parents
-            .entry(child)
-            .or_insert_with(|| base.parent(child))
-    }
-
     pub fn remove(&mut self, base: &Tree, node: u32) {
-        let mut visited = FxHashSet::default();
-        self.remove_impl(base, node, &mut visited);
+        let root = if self.has_cycle(base, node) {
+            // Every node of a loop descends from every other one, so the whole
+            // loop (rooted at its back-edge owner) goes away together.
+            let root = self.back_edge_owner(base, node);
+            self.set_cycle(base, root, false);
+            root
+        } else {
+            if let Some(p) = self.parent(base, node) {
+                self.detach(base, node, p);
+            }
+            node
+        };
 
-        self.cycles_mut(base).clear();
+        let taken = self.descendants.remove(&root);
+        let sub = taken.as_ref().unwrap_or_else(|| base.descendants(root));
 
-        let parents = self.parents.keys().copied().collect::<Vec<_>>();
-
-        for node in parents {
-            self.detect_and_mark_cycles(base, node);
+        for &n in sub {
+            self.clear_node(base, n);
         }
+
+        self.clear_node(base, root);
     }
 
-    fn remove_impl(
-        &mut self,
-        base: &Tree,
-        node: u32,
-        visited: &mut FxHashSet<u32>,
-    ) -> FxHashMap<u32, RemoveItem> {
-        // ----------------------------------------------------------
-        // 1.  Gather the full subtree (node + descendants)
-        // ----------------------------------------------------------
-        let desc = take(self.descendants_mut(base, node));
-        let chil = take(self.children_mut(base, node));
+    /// Unlinks `child` from `old_parent`, shrinking the ancestors' descendant sets.
+    fn detach(&mut self, base: &Tree, child: u32, old_parent: u32) {
+        self.children_mut(base, old_parent).remove(&child);
 
-        // ----------------------------------------------------------
-        // 2.  Record state for every node in the subtree
-        // ----------------------------------------------------------
-        let mut removed = FxHashMap::default();
+        let in_cycle = self.has_cycle(base, child);
 
-        for &id in desc.iter() {
-            removed.insert(
-                id,
-                RemoveItem {
-                    children: take(self.children_mut(base, id)),
-                    descendants: take(self.descendants_mut(base, id)),
-                    parent: self.parent_mut(base, id).take(),
-                },
-            );
+        if in_cycle && self.is_back_edge(base, child, old_parent) {
+            // The back-edge never contributed to any descendant set.
+            self.set_cycle(base, child, false);
+            return;
         }
 
-        // ----------------------------------------------------------
-        // 3.  Detach from former parent
-        // ----------------------------------------------------------
-        if let Some(p) = self.parent(base, node) {
-            self.children_mut(base, p).remove(&node);
+        let taken = self.descendants.remove(&child);
+        let sub = taken.as_ref().unwrap_or_else(|| base.descendants(child));
+
+        // Must be located before the subtraction below erases the evidence.
+        let owner = in_cycle.then(|| self.back_edge_owner(base, old_parent));
+
+        self.for_each_ancestor(base, old_parent, None, |d| {
+            d.remove(&child);
+            for n in sub {
+                d.remove(n);
+            }
+        });
+
+        if let Some(t) = taken {
+            self.descendants.insert(child, t);
         }
 
-        // ----------------------------------------------------------
-        // 4.  Shrink ancestors' descendants
-        // ----------------------------------------------------------
-        let mut cur = self.parent(base, node);
+        if let Some(owner) = owner {
+            // The loop is broken and its former back-edge becomes a regular edge,
+            // so the owner's subtree now belongs to everything up to `child`.
+            let owner_parent = self.parent(base, owner).expect("loop");
+            let taken = self.descendants.remove(&owner);
+            let sub = taken.as_ref().unwrap_or_else(|| base.descendants(owner));
 
-        while let Some(p) = cur {
-            if !visited.insert(p) {
-                break;
+            self.for_each_ancestor(base, owner_parent, Some(child), |d| {
+                d.insert(owner);
+                d.extend(sub.iter().copied());
+            });
+
+            if let Some(t) = taken {
+                self.descendants.insert(owner, t);
             }
 
-            let d = self.descendants_mut(base, p);
-
-            d.remove(&node);
-            d.retain(|k| !desc.contains(k));
-
-            cur = self.parent(base, p);
+            self.set_cycle(base, child, false);
         }
-
-        removed.insert(
-            node,
-            RemoveItem {
-                children: chil,
-                descendants: desc,
-                parent: self.parent_mut(base, node).take(),
-            },
-        );
-
-        for id in removed.keys() {
-            self.all.insert(*id, false);
-        }
-
-        removed
     }
 
-    /* ---- reparenting ---- */
-    fn reparent_subtree(
+    /// Links `child` under `parent`, growing the ancestors' descendant sets.
+    fn attach(&mut self, base: &Tree, child: u32, parent: u32) {
+        self.children_mut(base, parent).insert(child);
+
+        if self.is_back_edge(base, child, parent) {
+            self.set_cycle(base, child, true);
+            return;
+        }
+
+        let taken = self.descendants.remove(&child);
+        let sub = taken.as_ref().unwrap_or_else(|| base.descendants(child));
+
+        self.for_each_ancestor(base, parent, None, |d| {
+            d.insert(child);
+            d.extend(sub.iter().copied());
+        });
+
+        if let Some(t) = taken {
+            self.descendants.insert(child, t);
+        }
+    }
+
+    /// Applies `f` to the descendant set of `start` and of each of its ancestors,
+    /// stopping after `stop_after`, at a root, or after crossing a back-edge.
+    fn for_each_ancestor(
         &mut self,
         base: &Tree,
-        new_parent: Option<u32>,
-        root: u32,
-        mut removed: FxHashMap<u32, RemoveItem>,
-        visited: &mut FxHashSet<u32>,
+        start: u32,
+        stop_after: Option<u32>,
+        mut f: impl FnMut(&mut U32Set),
     ) {
-        // 1. Re-attach root
-        self.parents.insert(root, new_parent);
+        let cycles = self.cycles.as_ref().unwrap_or(&base.cycles);
+        // Guards against loops that were never marked (inconsistent input).
+        let mut budget = self.walk_budget(base);
+        let mut cur = start;
 
-        if let Some(p) = new_parent {
-            self.children_mut(base, p).insert(root);
-        }
+        loop {
+            let parent = match self.parents.get(&cur) {
+                Some(&p) => p,
+                None => base.parent(cur),
+            };
+            let d = set_mut(&mut self.descendants, &base.descendants, cur);
 
-        let item = removed.remove(&root).unwrap_or_default();
+            // Evaluated before `f`, which may remove the parent from the set.
+            let stop = match parent {
+                None => true,
+                Some(p) => {
+                    stop_after == Some(cur)
+                        || budget == 0
+                        || (cycles.contains(&cur) && (p == cur || d.contains(&p)))
+                }
+            };
 
-        // 3–4. ancestor rebuild & cycle check stay the same
-        let mut cur = new_parent;
+            f(d);
 
-        visited.clear();
-
-        while let Some(p) = cur {
-            if !visited.insert(p) {
-                break;
+            match parent {
+                Some(p) if !stop => {
+                    budget -= 1;
+                    cur = p;
+                }
+                _ => break,
             }
-
-            let d = self.descendants_mut(base, p);
-            d.extend(item.descendants.iter().copied());
-            d.insert(root);
-
-            cur = self.parent(base, p);
-        }
-
-        self.children.insert(root, item.children);
-        self.descendants.insert(root, item.descendants);
-
-        self.all.insert(root, true);
-
-        for (node, item) in removed {
-            self.parents.insert(node, item.parent);
-            self.children.insert(node, item.children);
-            self.descendants.insert(node, item.descendants);
-            self.all.insert(node, true);
         }
     }
+
+    fn clear_node(&mut self, base: &Tree, node: u32) {
+        self.children.insert(node, U32Set::default());
+        self.descendants.insert(node, U32Set::default());
+        self.parents.insert(node, None);
+        self.all.insert(node, false);
+
+        if self.has_cycle(base, node) {
+            self.cycles_mut(base).remove(&node);
+        }
+    }
+
+    #[inline]
+    fn walk_budget(&self, base: &Tree) -> usize {
+        self.parents.len() + base.parents.len() + 1
+    }
+}
+
+fn set_mut<'a>(log: &'a mut LogSets, base: &BaseSets, node: u32) -> &'a mut U32Set {
+    log.entry(node).or_insert_with(|| {
+        base.get(&node)
+            .map(|s| s.as_set().clone())
+            .unwrap_or_default()
+    })
+}
+
+/// True when shrinking would reclaim a meaningful amount; avoids grow/shrink churn.
+#[inline]
+fn is_sparse(capacity: usize, len: usize) -> bool {
+    capacity > 2 * len + 16
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct CycleError(pub u32);
-
-#[derive(Clone, Default)]
-struct RemoveItem {
-    children: U32Set,
-    descendants: U32Set,
-    parent: Option<u32>,
-}
 
 #[derive(Clone)]
 pub struct TreeAncestorIter<'a> {
@@ -1014,5 +1063,154 @@ mod tests {
         assert_eq!(tree2.all_nodes().len(), 2);
         assert!(tree2.all_nodes().contains(&100));
         assert!(tree2.all_nodes().contains(&200));
+    }
+
+    /* ---------- cycle breaking restores a consistent forest ---------- */
+    #[test]
+    fn breaking_cycle_restores_descendants() {
+        let base = Tree::new();
+        let mut log = TreeLog::new();
+
+        // 1 -> 2 -> 3, plus 5 under 2
+        log.insert(&base, None, 1);
+        log.insert(&base, Some(1), 2);
+        log.insert(&base, Some(2), 3);
+        log.insert(&base, Some(2), 5);
+
+        // close the loop: parent(1) = 3
+        log.insert(&base, Some(3), 1);
+        assert!(log.has_cycle(&base, 1));
+        assert!(log.has_cycle(&base, 2));
+        assert!(log.has_cycle(&base, 3));
+        assert!(!log.has_cycle(&base, 5));
+
+        // break the loop by moving 2 (not the back-edge owner) to the root
+        log.insert(&base, None, 2);
+        assert!(log.cycles(&base).is_empty());
+        assert_eq!(collect_descendants(&log, &base, 2), vec![1, 2, 3, 5]);
+        assert_eq!(collect_descendants(&log, &base, 3), vec![1, 3]);
+        assert_eq!(collect_descendants(&log, &base, 1), vec![1]);
+        assert_eq!(log.depth(&base, 1), Ok(3));
+    }
+
+    /* ---------- randomized comparison against a reference model ---------- */
+    #[test]
+    fn random_ops_match_reference_model() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+        use std::collections::BTreeMap;
+
+        const IDS: u32 = 10;
+
+        /// node -> parent, for every live node
+        type Model = BTreeMap<u32, Option<u32>>;
+
+        fn chain(model: &Model, mut n: u32) -> (Vec<u32>, bool) {
+            let mut path = vec![n];
+            loop {
+                match model.get(&n).copied().flatten() {
+                    Some(p) if path.contains(&p) => return (path, true),
+                    Some(p) => {
+                        path.push(p);
+                        n = p;
+                    }
+                    None => return (path, false),
+                }
+            }
+        }
+
+        fn in_loop(model: &Model, n: u32) -> bool {
+            let mut cur = model.get(&n).copied().flatten();
+            for _ in 0..=model.len() {
+                match cur {
+                    Some(c) if c == n => return true,
+                    Some(c) => cur = model.get(&c).copied().flatten(),
+                    None => return false,
+                }
+            }
+            false
+        }
+
+        fn reaches(model: &Model, from: u32, target: u32) -> bool {
+            from != target && chain(model, from).0[1..].contains(&target)
+        }
+
+        /// Removes `node` and everything whose parent chain passes through it
+        /// (for a loop member that is the whole loop plus what hangs off it).
+        fn model_remove(model: &mut Model, node: u32) {
+            let removed: Vec<u32> = model
+                .keys()
+                .copied()
+                .filter(|&k| k == node || reaches(model, k, node))
+                .collect();
+            for r in removed {
+                model.remove(&r);
+            }
+        }
+
+        fn check(model: &Model, base: &Tree, log: &TreeLog) {
+            let acyclic = model.keys().all(|&k| !in_loop(model, k));
+            for n in 0..IDS {
+                let live = model.contains_key(&n);
+                assert_eq!(
+                    log.parent(base, n),
+                    model.get(&n).copied().flatten(),
+                    "parent of {n}"
+                );
+                let expected_children: Set = model
+                    .iter()
+                    .filter(|(_, p)| **p == Some(n))
+                    .map(|(c, _)| *c)
+                    .collect();
+                assert_eq!(*log.children(base, n), expected_children, "children of {n}");
+                assert_eq!(
+                    log.has_cycle(base, n),
+                    live && in_loop(model, n),
+                    "cycle flag of {n}"
+                );
+                if acyclic {
+                    let expected: Set = model
+                        .keys()
+                        .copied()
+                        .filter(|&k| reaches(model, k, n))
+                        .collect();
+                    assert_eq!(*log.descendants(base, n), expected, "descendants of {n}");
+                }
+            }
+        }
+
+        for seed in 0..6u64 {
+            let mut rng = StdRng::seed_from_u64(0x5eed + seed);
+            let mut model = Model::new();
+            let mut base = Tree::new();
+            let mut log = TreeLog::new();
+
+            for step in 0..3000 {
+                let node = rng.random_range(0..IDS);
+                if rng.random_range(0..10) < 6 {
+                    let parent = if rng.random_range(0..4) == 0 {
+                        None
+                    } else {
+                        Some(rng.random_range(0..IDS))
+                    };
+                    log.insert(&base, parent, node);
+                    model.insert(node, parent);
+                    if let Some(p) = parent {
+                        model.entry(p).or_insert(None);
+                    }
+                } else {
+                    log.remove(&base, node);
+                    model_remove(&mut model, node);
+                }
+
+                check(&model, &base, &log);
+
+                if step % 7 == 6 {
+                    base.apply(std::mem::take(&mut log));
+                    let expected_all: Set = model.keys().copied().collect();
+                    assert_eq!(*base.all_nodes(), expected_all, "all nodes after apply");
+                    check(&model, &base, &log);
+                }
+            }
+        }
     }
 }

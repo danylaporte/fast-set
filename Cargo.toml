@@ -11,4 +11,16 @@ rustc-hash = "2.1"
 
 [dev-dependencies]
 dhat = "0.3"
-rand = "0.9"
+rand = "0.10"
+
+[[bench]]
+name = "flat_set_index"
+harness = false
+
+[[bench]]
+name = "tree"
+harness = false
+
+[[bench]]
+name = "one_index"
+harness = false

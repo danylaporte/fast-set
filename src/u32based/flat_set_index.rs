@@ -124,6 +124,8 @@ impl<K, S> FlatSetIndex<K, S> {
     pub fn values(&self) -> U32Set {
         let mut b = self.none.as_set().clone();
 
+        b.reserve(self.map.values().map(|s| s.as_set().len()).sum());
+
         for item in self.map.values() {
             b.extend(item.as_set());
         }
@@ -338,13 +340,20 @@ impl<K, S> FlatSetIndexLog<K, S> {
         K: Eq + Hash,
         S: BuildHasher,
     {
-        let v = self.get_mut(base, key);
-        *v = v.difference(rhs).copied().collect();
+        self.update(
+            base,
+            key,
+            |b| !b.is_disjoint(rhs),
+            |v| difference_in_place(v, rhs),
+        )
     }
 
     pub fn difference_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &U32Set) {
-        let v = self.none_mut(base);
-        *v = v.difference(rhs).copied().collect();
+        self.update_none(
+            base,
+            |b| !b.is_disjoint(rhs),
+            |v| difference_in_place(v, rhs),
+        )
     }
 
     #[inline]
@@ -360,32 +369,18 @@ impl<K, S> FlatSetIndexLog<K, S> {
         }
     }
 
-    fn get_mut(&mut self, base: &FlatSetIndex<K, S>, key: K) -> &mut U32Set
-    where
-        K: Eq + Hash,
-        S: BuildHasher,
-    {
-        match self.map.entry(key) {
-            Entry::Occupied(o) => o.into_mut(),
-            Entry::Vacant(v) => {
-                let b = base.get(v.key()).as_set().clone();
-                v.insert(b)
-            }
-        }
-    }
-
     #[inline]
     pub fn insert(&mut self, base: &FlatSetIndex<K, S>, key: K, val: u32) -> bool
     where
         K: Eq + Hash,
         S: BuildHasher,
     {
-        self.get_mut(base, key).insert(val)
+        self.update(base, key, |b| !b.contains(&val), |v| v.insert(val))
     }
 
     #[inline]
     pub fn insert_none(&mut self, base: &FlatSetIndex<K, S>, val: u32) -> bool {
-        self.none_mut(base).insert(val)
+        self.update_none(base, |b| !b.contains(&val), |v| v.insert(val))
     }
 
     pub fn intersection(&mut self, base: &FlatSetIndex<K, S>, key: K, rhs: &U32Set)
@@ -393,13 +388,20 @@ impl<K, S> FlatSetIndexLog<K, S> {
         K: Eq + Hash,
         S: BuildHasher,
     {
-        let v = self.get_mut(base, key);
-        *v = v.intersection(rhs).copied().collect();
+        self.update(
+            base,
+            key,
+            |b| !b.is_subset(rhs),
+            |v| v.retain(|x| rhs.contains(x)),
+        )
     }
 
     pub fn intersection_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &U32Set) {
-        let v = self.none_mut(base);
-        *v = v.intersection(rhs).copied().collect();
+        self.update_none(
+            base,
+            |b| !b.is_subset(rhs),
+            |v| v.retain(|x| rhs.contains(x)),
+        )
     }
 
     #[inline]
@@ -410,22 +412,18 @@ impl<K, S> FlatSetIndexLog<K, S> {
         }
     }
 
-    fn none_mut(&mut self, base: &FlatSetIndex<K, S>) -> &mut U32Set {
-        self.none.get_or_insert_with(|| base.none.as_set().clone())
-    }
-
     #[inline]
     pub fn remove(&mut self, base: &FlatSetIndex<K, S>, key: K, val: u32) -> bool
     where
         K: Eq + Hash,
         S: BuildHasher,
     {
-        self.get_mut(base, key).remove(&val)
+        self.update(base, key, |b| b.contains(&val), |v| v.remove(&val))
     }
 
     #[inline]
     pub fn remove_none(&mut self, base: &FlatSetIndex<K, S>, val: u32) -> bool {
-        self.none_mut(base).remove(&val)
+        self.update_none(base, |b| b.contains(&val), |v| v.remove(&val))
     }
 
     pub fn union(&mut self, base: &FlatSetIndex<K, S>, key: K, rhs: &U32Set)
@@ -433,11 +431,69 @@ impl<K, S> FlatSetIndexLog<K, S> {
         K: Eq + Hash,
         S: BuildHasher,
     {
-        self.get_mut(base, key).extend(rhs.iter().copied());
+        self.update(base, key, |b| !rhs.is_subset(b), |v| v.extend(rhs))
     }
 
     pub fn union_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &U32Set) {
-        self.none_mut(base).extend(rhs.iter().copied());
+        self.update_none(base, |b| !rhs.is_subset(b), |v| v.extend(rhs))
+    }
+
+    /// Runs `apply` on the log entry for `key`. When the key is not yet in the log, the
+    /// base set is only cloned if `would_change` says `apply` would actually modify it.
+    fn update<R: Default>(
+        &mut self,
+        base: &FlatSetIndex<K, S>,
+        key: K,
+        would_change: impl FnOnce(&U32Set) -> bool,
+        apply: impl FnOnce(&mut U32Set) -> R,
+    ) -> R
+    where
+        K: Eq + Hash,
+        S: BuildHasher,
+    {
+        match self.map.entry(key) {
+            Entry::Occupied(o) => apply(o.into_mut()),
+            Entry::Vacant(v) => {
+                let b = base.get(v.key()).as_set();
+
+                if would_change(b) {
+                    apply(v.insert(b.clone()))
+                } else {
+                    R::default()
+                }
+            }
+        }
+    }
+
+    fn update_none<R: Default>(
+        &mut self,
+        base: &FlatSetIndex<K, S>,
+        would_change: impl FnOnce(&U32Set) -> bool,
+        apply: impl FnOnce(&mut U32Set) -> R,
+    ) -> R {
+        match &mut self.none {
+            Some(v) => apply(v),
+            None => {
+                let b = base.none.as_set();
+
+                if would_change(b) {
+                    apply(self.none.insert(b.clone()))
+                } else {
+                    R::default()
+                }
+            }
+        }
+    }
+}
+
+/// Removes every element of `rhs` from `v`, iterating over whichever set is smaller.
+fn difference_in_place(v: &mut U32Set, rhs: &U32Set) {
+    if rhs.len() < v.len() {
+        for x in rhs {
+            v.remove(x);
+        }
+    } else {
+        v.retain(|x| !rhs.contains(x));
     }
 }
 

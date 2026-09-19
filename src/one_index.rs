@@ -135,8 +135,7 @@ impl<K, V> Default for OneIndexLog<K, V> {
 }
 
 pub struct OneIndexBuilder<K, V> {
-    base: OneIndex<K, V>,
-    log: OneIndexLog<K, V>,
+    index: OneIndex<K, V>,
 }
 
 impl<K, V> OneIndexBuilder<K, V> {
@@ -146,12 +145,11 @@ impl<K, V> OneIndexBuilder<K, V> {
     }
 
     #[inline]
-    pub fn build(mut self) -> OneIndex<K, V>
+    pub fn build(self) -> OneIndex<K, V>
     where
         V: PartialEq,
     {
-        self.base.index.apply(self.log.log);
-        self.base
+        self.index
     }
 
     #[inline]
@@ -160,7 +158,7 @@ impl<K, V> OneIndexBuilder<K, V> {
         K: Into<u32>,
         V: PartialEq,
     {
-        self.log.insert(&self.base, key, value)
+        self.index.index.insert(key.into(), value);
     }
 }
 
@@ -168,8 +166,7 @@ impl<K, V> Default for OneIndexBuilder<K, V> {
     #[inline]
     fn default() -> Self {
         Self {
-            base: OneIndex::new(),
-            log: OneIndexLog::new(),
+            index: OneIndex::new(),
         }
     }
 }
