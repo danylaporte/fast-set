@@ -388,20 +388,29 @@ impl<K, S> FlatSetIndexLog<K, S> {
         K: Eq + Hash,
         S: BuildHasher,
     {
-        self.update(
-            base,
-            key,
-            |b| !b.is_subset(rhs),
-            |v| v.retain(|x| rhs.contains(x)),
-        )
+        match self.map.entry(key) {
+            Entry::Occupied(o) => intersection_in_place(o.into_mut(), rhs),
+            Entry::Vacant(v) => {
+                let b = base.get(v.key()).as_set();
+
+                if !b.is_subset(rhs) {
+                    v.insert(intersect(b, rhs));
+                }
+            }
+        }
     }
 
     pub fn intersection_none(&mut self, base: &FlatSetIndex<K, S>, rhs: &U32Set) {
-        self.update_none(
-            base,
-            |b| !b.is_subset(rhs),
-            |v| v.retain(|x| rhs.contains(x)),
-        )
+        match &mut self.none {
+            Some(v) => intersection_in_place(v, rhs),
+            None => {
+                let b = base.none.as_set();
+
+                if !b.is_subset(rhs) {
+                    self.none = Some(intersect(b, rhs));
+                }
+            }
+        }
     }
 
     #[inline]
@@ -497,6 +506,23 @@ fn difference_in_place(v: &mut U32Set, rhs: &U32Set) {
     }
 }
 
+/// Builds `a ∩ b` by probing the larger set with the elements of the smaller one.
+fn intersect(a: &U32Set, b: &U32Set) -> U32Set {
+    let (small, large) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let mut out = U32Set::with_capacity_and_hasher(small.len(), Default::default());
+    out.extend(small.iter().filter(|x| large.contains(x)));
+    out
+}
+
+/// Keeps only the elements of `v` found in `rhs`; rebuilds when `rhs` is much smaller.
+fn intersection_in_place(v: &mut U32Set, rhs: &U32Set) {
+    if rhs.len() * 2 < v.len() {
+        *v = intersect(v, rhs);
+    } else {
+        v.retain(|x| rhs.contains(x));
+    }
+}
+
 impl<K, S: Default> Default for FlatSetIndexLog<K, S> {
     #[inline]
     fn default() -> Self {
@@ -575,6 +601,35 @@ mod tests {
         assert!(!idx.contains(&1, 2));
         assert!(idx.contains(&1, 3));
         assert_eq!(idx.get(&1).as_set().len(), 2);
+    }
+
+    #[test]
+    fn intersection_with_small_and_large_rhs() {
+        let base = {
+            let mut b = FlatSetIndexBuilder::new();
+            b.union(1, &bitmap(&(0..100).collect::<Vec<_>>()));
+            b.union_none(&bitmap(&[1, 2, 3, 4]));
+            b.build()
+        };
+        let mut log = FlatSetIndexLog::new();
+
+        log.intersection(&base, 1, &bitmap(&(50..200).collect::<Vec<_>>()));
+        assert_eq!(*log.get(&base, &1), bitmap(&(50..100).collect::<Vec<_>>()));
+
+        // log entry now exists; tiny rhs takes the rebuild path
+        log.intersection(&base, 1, &bitmap(&[60, 70, 500]));
+        assert_eq!(*log.get(&base, &1), bitmap(&[60, 70]));
+
+        log.intersection(&base, 1, &bitmap(&[60, 70, 80, 90, 100]));
+        assert_eq!(*log.get(&base, &1), bitmap(&[60, 70]));
+
+        // superset leaves the key out of the log
+        log.intersection(&base, 2, &bitmap(&[1]));
+        assert!(!log.map.contains_key(&2));
+
+        log.intersection_none(&base, &bitmap(&[2, 3, 9]));
+        log.intersection_none(&base, &bitmap(&[3]));
+        assert_eq!(*log.none(&base), bitmap(&[3]));
     }
 
     #[test]

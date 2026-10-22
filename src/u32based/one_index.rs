@@ -88,7 +88,14 @@ impl<V> OneIndex<V> {
     {
         let index = index as usize;
 
-        if self.data.len() <= index {
+        // Keys arriving in ascending order (the common bulk-load case) just append.
+        if index == self.data.len() {
+            self.data.push(Some(value));
+            self.len += 1;
+            return true;
+        }
+
+        if self.data.len() < index {
             self.data.resize_with(index + 1, || None);
         }
 

@@ -43,6 +43,8 @@ impl Tree {
         fn apply_sets(target: &mut BaseSets, source: LogSets) -> bool {
             let mut changed = false;
 
+            target.reserve(source.values().filter(|s| !s.is_empty()).count());
+
             for (k, b) in source {
                 match target.entry(k) {
                     Entry::Occupied(o) if b.is_empty() => {
@@ -61,7 +63,8 @@ impl Tree {
                 }
             }
 
-            if changed && is_sparse(target.capacity(), target.len()) {
+            // Unconditional: the `reserve` above may over-allocate when entries only update.
+            if is_sparse(target.capacity(), target.len()) {
                 target.shrink_to_fit();
             }
 
@@ -79,12 +82,17 @@ impl Tree {
         }
 
         // ---------- parents ----------
+        self.parents
+            .reserve(log.parents.values().filter(|p| p.is_some()).count());
+
         for (child, new_parent) in log.parents {
             changed |= match new_parent {
                 Some(p) => self.parents.insert(child, p).is_none_or(|old| old != p),
                 None => self.parents.remove(&child).is_some(),
             };
         }
+
+        self.all.reserve(log.all.values().filter(|&&v| v).count());
 
         for (node, insert) in log.all {
             changed |= if insert {
@@ -94,13 +102,11 @@ impl Tree {
             };
         }
 
-        if changed {
-            if is_sparse(self.parents.capacity(), self.parents.len()) {
-                self.parents.shrink_to_fit();
-            }
-            if is_sparse(self.all.capacity(), self.all.len()) {
-                self.all.shrink_to_fit();
-            }
+        if is_sparse(self.parents.capacity(), self.parents.len()) {
+            self.parents.shrink_to_fit();
+        }
+        if is_sparse(self.all.capacity(), self.all.len()) {
+            self.all.shrink_to_fit();
         }
 
         // ---------- children & descendants ----------
@@ -179,16 +185,118 @@ impl Tree {
 
 impl FromIterator<(u32, Option<u32>)> for Tree {
     fn from_iter<I: IntoIterator<Item = (u32, Option<u32>)>>(iter: I) -> Self {
+        let edges: Vec<_> = iter.into_iter().collect();
+
+        if let Some(tree) = Tree::build_acyclic(&edges) {
+            return tree;
+        }
+
+        // Loops are resolved by insertion order, so replay the edges one by one.
         let mut log = TreeLog::new();
         let base = Tree::new();
 
-        for (child, parent) in iter {
+        for (child, parent) in edges {
             log.insert(&base, parent, child);
         }
 
         let mut tree = Tree::new();
         tree.apply(log);
         tree
+    }
+}
+
+impl Tree {
+    /// Builds the tree in bulk from its final parent links; returns `None` if they form a loop.
+    fn build_acyclic(edges: &[(u32, Option<u32>)]) -> Option<Self> {
+        const NONE: u32 = u32::MAX;
+
+        // Dense ids keep the hot loops below on plain vectors instead of hash maps.
+        let mut ids = FxHashMap::with_capacity_and_hasher(edges.len(), Default::default());
+        let mut nodes = Vec::with_capacity(edges.len());
+        let mut parent = Vec::with_capacity(edges.len());
+
+        let mut id_of = |node: u32| -> usize {
+            *ids.entry(node).or_insert_with(|| {
+                nodes.push(node);
+                parent.push(NONE);
+                nodes.len() - 1
+            })
+        };
+
+        let links: Vec<(usize, u32)> = edges
+            .iter()
+            .map(|&(child, p)| (id_of(child), p.map_or(NONE, |p| id_of(p) as u32)))
+            .collect();
+
+        drop(ids);
+
+        for (child, p) in links {
+            parent[child] = p;
+        }
+
+        let n = nodes.len();
+        let mut child_len = vec![0usize; n];
+        let mut desc_len = vec![0usize; n];
+
+        for i in 0..n {
+            let mut cur = parent[i];
+
+            if cur != NONE {
+                child_len[cur as usize] += 1;
+            }
+
+            let mut steps = 0;
+
+            while cur != NONE {
+                if cur as usize == i || steps == n {
+                    return None;
+                }
+
+                desc_len[cur as usize] += 1;
+                cur = parent[cur as usize];
+                steps += 1;
+            }
+        }
+
+        let with_len = |len: &usize| U32Set::with_capacity_and_hasher(*len, Default::default());
+        let mut children: Vec<U32Set> = child_len.iter().map(with_len).collect();
+        let mut descendants: Vec<U32Set> = desc_len.iter().map(with_len).collect();
+        let mut parents = FxHashMap::with_capacity_and_hasher(n, Default::default());
+
+        for (i, &node) in nodes.iter().enumerate() {
+            let mut cur = parent[i];
+
+            if cur != NONE {
+                children[cur as usize].insert(node);
+                parents.insert(node, nodes[cur as usize]);
+            }
+
+            while cur != NONE {
+                descendants[cur as usize].insert(node);
+                cur = parent[cur as usize];
+            }
+        }
+
+        fn intern(nodes: &[u32], sets: Vec<U32Set>) -> BaseSets {
+            let len = sets.iter().filter(|s| !s.is_empty()).count();
+            let mut map = FxHashMap::with_capacity_and_hasher(len, Default::default());
+
+            for (&node, set) in nodes.iter().zip(sets) {
+                if !set.is_empty() {
+                    map.insert(node, set.into());
+                }
+            }
+
+            map
+        }
+
+        Some(Self {
+            all: nodes.iter().copied().collect(),
+            children: intern(&nodes, children),
+            cycles: Set::default(),
+            descendants: intern(&nodes, descendants),
+            parents,
+        })
     }
 }
 
@@ -385,6 +493,12 @@ impl TreeLog {
             return;
         }
 
+        if let (Some(op), Some(np)) = (old_parent, parent)
+            && self.try_move(base, child, op, np)
+        {
+            return;
+        }
+
         if let Some(op) = old_parent {
             self.detach(base, child, op);
         }
@@ -393,6 +507,77 @@ impl TreeLog {
 
         if let Some(np) = parent {
             self.attach(base, child, np);
+        }
+    }
+
+    /// Re-parents `child` from `old_parent` to `new_parent` without touching the
+    /// ancestors they share, whose descendant sets do not change. Only handles
+    /// loop-free paths; returns `false` (having changed nothing) otherwise.
+    fn try_move(&mut self, base: &Tree, child: u32, old_parent: u32, new_parent: u32) -> bool {
+        let cycles = self.cycles(base);
+
+        if !cycles.is_empty()
+            && (cycles.contains(&child)
+                || self
+                    .ancestors_with_self(base, old_parent)
+                    .any(|n| cycles.contains(&n))
+                || self
+                    .ancestors_with_self(base, new_parent)
+                    .any(|n| cycles.contains(&n)))
+        {
+            return false;
+        }
+
+        if self.is_back_edge(base, child, new_parent) {
+            return false;
+        }
+
+        let common = self
+            .ancestors_with_self(base, old_parent)
+            .find(|&a| a == new_parent || self.descendants(base, a).contains(&new_parent));
+
+        self.children_mut(base, old_parent).remove(&child);
+        self.children_mut(base, new_parent).insert(child);
+        self.parents.insert(child, Some(new_parent));
+
+        let taken = self.descendants.remove(&child);
+        let sub = taken.as_ref().unwrap_or_else(|| base.descendants(child));
+
+        self.for_each_ancestor_below(base, old_parent, common, |d| {
+            d.remove(&child);
+            for n in sub {
+                d.remove(n);
+            }
+        });
+
+        self.for_each_ancestor_below(base, new_parent, common, |d| {
+            d.insert(child);
+            d.extend(sub.iter().copied());
+        });
+
+        if let Some(t) = taken {
+            self.descendants.insert(child, t);
+        }
+
+        true
+    }
+
+    /// Applies `f` to the descendant set of `start` and each of its ancestors, up to
+    /// but excluding `stop`. The path must be loop-free.
+    fn for_each_ancestor_below(
+        &mut self,
+        base: &Tree,
+        start: u32,
+        stop: Option<u32>,
+        mut f: impl FnMut(&mut U32Set),
+    ) {
+        let mut cur = Some(start);
+
+        while let Some(n) = cur
+            && Some(n) != stop
+        {
+            f(set_mut(&mut self.descendants, &base.descendants, n));
+            cur = self.parent(base, n);
         }
     }
 
@@ -1091,6 +1276,110 @@ mod tests {
         assert_eq!(collect_descendants(&log, &base, 3), vec![1, 3]);
         assert_eq!(collect_descendants(&log, &base, 1), vec![1]);
         assert_eq!(log.depth(&base, 1), Ok(3));
+    }
+
+    /* ---------- bulk build matches incremental replay ---------- */
+    #[test]
+    fn from_iter_matches_incremental_replay() {
+        use rand::{RngExt, SeedableRng, rngs::StdRng};
+
+        fn replay(edges: &[(u32, Option<u32>)]) -> Tree {
+            let base = Tree::new();
+            let mut log = TreeLog::new();
+            for &(c, p) in edges {
+                log.insert(&base, p, c);
+            }
+            let mut t = Tree::new();
+            t.apply(log);
+            t
+        }
+
+        fn assert_same(a: &Tree, b: &Tree, ids: u32) {
+            assert_eq!(a.all, b.all);
+            assert_eq!(a.parents, b.parents);
+            assert_eq!(a.cycles, b.cycles);
+            for n in 0..ids {
+                assert_eq!(a.children(n), b.children(n), "children of {n}");
+                assert_eq!(a.descendants(n), b.descendants(n), "descendants of {n}");
+            }
+            assert_eq!(a.children.len(), b.children.len());
+            assert_eq!(a.descendants.len(), b.descendants.len());
+        }
+
+        let mut rng = StdRng::seed_from_u64(0xB01D);
+
+        for round in 0..400 {
+            let ids = rng.random_range(1..40u32);
+            let edges: Vec<(u32, Option<u32>)> = (0..rng.random_range(0..60))
+                .map(|_| {
+                    let c = rng.random_range(0..ids);
+                    // Mostly point at smaller ids so many rounds end up acyclic.
+                    let p = match rng.random_range(0..10) {
+                        0 => None,
+                        1 => Some(rng.random_range(0..ids)),
+                        _ if c > 0 => Some(rng.random_range(0..c)),
+                        _ => None,
+                    };
+                    (c, p)
+                })
+                .collect();
+
+            let bulk: Tree = edges.iter().copied().collect();
+            assert_same(&bulk, &replay(&edges), ids);
+
+            if round % 50 == 0 {
+                assert!(Tree::build_acyclic(&[(1, Some(2)), (2, Some(1))]).is_none());
+                assert!(Tree::build_acyclic(&[(3, Some(3))]).is_none());
+                assert!(Tree::build_acyclic(&[(4, Some(1)), (1, Some(2)), (2, Some(1))]).is_none());
+            }
+        }
+    }
+
+    /* ---------- moves only touch ancestors below the common one ---------- */
+    #[test]
+    fn move_between_siblings_leaves_common_ancestors_alone() {
+        // 0 -> {1, 2}, 1 -> 3 -> 4
+        let base: Tree = [
+            (0, None),
+            (1, Some(0)),
+            (2, Some(0)),
+            (3, Some(1)),
+            (4, Some(3)),
+        ]
+        .into_iter()
+        .collect();
+        let mut log = TreeLog::new();
+
+        log.insert(&base, Some(2), 3);
+
+        assert!(
+            !log.descendants.contains_key(&0),
+            "root set must not be copied"
+        );
+        assert_eq!(collect_descendants(&log, &base, 0), vec![0, 1, 2, 3, 4]);
+        assert_eq!(collect_descendants(&log, &base, 1), vec![1]);
+        assert_eq!(collect_descendants(&log, &base, 2), vec![2, 3, 4]);
+        assert_eq!(log.parent(&base, 3), Some(2));
+        assert!(!log.children(&base, 1).contains(&3));
+        assert!(log.children(&base, 2).contains(&3));
+
+        // up to an ancestor, then back down below a former sibling
+        log.insert(&base, Some(0), 4);
+        assert_eq!(collect_descendants(&log, &base, 2), vec![2, 3]);
+        assert_eq!(collect_descendants(&log, &base, 0), vec![0, 1, 2, 3, 4]);
+        log.insert(&base, Some(3), 4);
+        assert_eq!(collect_descendants(&log, &base, 2), vec![2, 3, 4]);
+
+        // across separate trees
+        log.insert(&base, None, 9);
+        log.insert(&base, Some(9), 2);
+        assert_eq!(collect_descendants(&log, &base, 0), vec![0, 1]);
+        assert_eq!(collect_descendants(&log, &base, 9), vec![2, 3, 4, 9]);
+
+        let mut t = base.clone();
+        t.apply(log);
+        assert_eq!(t.descendants(9).len(), 3);
+        assert_eq!(t.descendants(0).len(), 1);
     }
 
     /* ---------- randomized comparison against a reference model ---------- */

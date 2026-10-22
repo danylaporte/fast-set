@@ -448,21 +448,36 @@ impl<'a, K> TreeTrx<'a, K> {
 pub struct CycleError<K>(pub K);
 
 pub fn empty_tree<K>() -> &'static Tree<K> {
-    let empty = u32based::tree::empty_tree();
-    // SAFETY:
-    // - `EMPTY_LOG` has static lifetime, hence the address is valid forever.
-    // - `Tree<K>` is `#[repr(transparent)]` and zero-sized, so the
-    //   reference to the inner value can be transmuted to a reference to the
-    //   wrapper without changing the address or violating any aliasing rules.
-    unsafe { core::mem::transmute(&empty) }
+    let empty: &'static u32based::Tree = u32based::tree::empty_tree();
+    // SAFETY: the pointee is a `static`, and `Tree<K>` is `#[repr(transparent)]`
+    // over `u32based::Tree` (its only other field is a `PhantomData`).
+    unsafe { &*(empty as *const u32based::Tree as *const Tree<K>) }
 }
 
 pub fn empty_tree_log<K>() -> &'static TreeIndexLog<K> {
-    let empty = u32based::tree::empty_tree_log();
-    // SAFETY:
-    // - `EMPTY_LOG` has static lifetime, hence the address is valid forever.
-    // - `TreeLog<K>` is `#[repr(transparent)]` and zero-sized, so the
-    //   reference to the inner value can be transmuted to a reference to the
-    //   wrapper without changing the address or violating any aliasing rules.
-    unsafe { core::mem::transmute(&empty) }
+    let empty: &'static u32based::TreeLog = u32based::tree::empty_tree_log();
+    // SAFETY: the pointee is a `static`, and `TreeIndexLog<K>` is `#[repr(transparent)]`
+    // over `u32based::TreeLog` (its only other field is a `PhantomData`).
+    unsafe { &*(empty as *const u32based::TreeLog as *const TreeIndexLog<K>) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_tree_and_log_point_at_the_static_instances() {
+        let tree = empty_tree::<u32>();
+        let log = empty_tree_log::<u32>();
+
+        assert!(std::ptr::eq(&tree.erased, u32based::tree::empty_tree()));
+        assert!(std::ptr::eq(&log.erased, u32based::tree::empty_tree_log()));
+
+        assert_eq!(tree.all_nodes().count(), 0);
+        assert!(tree.children(1).is_empty());
+        assert!(tree.descendants(1).is_empty());
+        assert_eq!(tree.parent(1), None);
+        assert!(log.children(tree, 1).is_empty());
+        assert_eq!(log.parent(tree, 1), None);
+    }
 }
